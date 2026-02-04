@@ -1,6 +1,7 @@
 # Known Issues
 
-Issues identified during code review. All issues below have been fixed.
+Issues identified during code review. Issues 1–25 have been fixed.
+Issues 26–35 were identified in the Round 3 post-merge review.
 
 ## Security / Correctness
 
@@ -197,3 +198,183 @@ with `oid.to_id_string()` / `attr.attr_type().to_id_string()` in `verify.rs`
 **Fix:** Replaced `used.get(idx).copied().unwrap_or(true)` and
 `used.get_mut(idx)` with direct indexing (`used[idx]`), since the vector
 is guaranteed to have the same length as the `intermediates` iterator.
+
+---
+
+## Round 3: Post-merge comprehensive review
+
+Issues identified after merging significant new features (directory/batch mode,
+chain detection, Name Constraints, keyCertSign, trusted root validation,
+`find_system_ca_bundle()`).
+
+### 26. Duplicate hostname/email/IP matching logic in `check.rs` and `verify.rs`
+
+**Severity:** Medium (maintenance risk)
+
+`check.rs` and `verify.rs` both implement the same matching logic for hostnames,
+emails, and IP addresses:
+
+- `check_host()` (check.rs:41) vs `verify_hostname()` (verify.rs:1012)
+- `check_email()` (check.rs:73) vs `verify_email()` (verify.rs:1058)
+- `check_ip()` (check.rs:83) vs `verify_ip()` (verify.rs:1088)
+
+The `check.rs` versions operate on `CertificateInfo` (parsed high-level type),
+while `verify.rs` versions operate on `X509Certificate` (raw x509-parser type).
+Both use the same `util::hostname_matches()` helper and the same RFC 6125
+matching semantics. A bug fix in one module must be replicated in the other.
+
+**Recommendation:** Extract common matching logic so both call sites share one
+implementation, or have the verify module construct a `CertificateInfo` for
+the leaf and delegate to the check module.
+
+---
+
+### 27. `find_system_ca_bundle()` duplicates path discovery from `TrustStore::system()`
+
+**Severity:** Low (redundancy)
+
+Both `TrustStore::system()` (verify.rs:183–186) and `find_system_ca_bundle()`
+(verify.rs:993–998) maintain the same list of 4 fallback CA bundle paths:
+
+```
+/etc/ssl/certs/ca-certificates.crt
+/etc/pki/tls/certs/ca-bundle.crt
+/etc/ssl/ca-bundle.pem
+/etc/ssl/cert.pem
+```
+
+`find_system_ca_bundle()` is exported in `lib.rs` but not used by the CLI tool.
+If a new path needs to be added, it must be updated in both places.
+
+**Recommendation:** Extract the path list to a constant and have
+`TrustStore::system()` call `find_system_ca_bundle()` for path discovery.
+
+---
+
+### 28. `serial_compact()` is unused dead code
+
+**Severity:** Low
+
+`CertificateInfo::serial_compact()` is defined at `fields.rs:230` but never
+called anywhere in the codebase (not by the library, the CLI, or any tests).
+
+**Recommendation:** Remove or mark as `#[allow(dead_code)]` if intended for
+future public API use.
+
+---
+
+### 29. Repeated `build_dn(x509.subject()).to_oneline()` pattern in `verify.rs`
+
+**Severity:** Low (performance)
+
+The expression `crate::parser::build_dn(x509.subject()).to_oneline()` appears
+16 times in `verify_chain_with_options()`. Each call re-traverses the raw ASN.1
+DN structure, builds a `DistinguishedName` with string allocations, then
+formats it. For a chain of N certificates, this is called O(N) times per
+verification check (time validity, basic constraints, critical extensions,
+duplicate extensions, Name Constraints, signatures, etc.).
+
+**Recommendation:** Pre-compute subject strings once per certificate after
+parsing the chain, storing them alongside the parsed certificates.
+
+---
+
+### 30. `format_crl_reason()` relies on fragile Debug string matching
+
+**Severity:** Medium (correctness risk)
+
+`format_crl_reason()` (verify.rs:1423) uses `format!("{:?}", rc)` to get the
+Debug representation of a `ReasonCode`, then matches with `.contains()` checks
+(e.g., `debug.contains("KeyCompromise")`). If the upstream `x509-parser` crate
+changes its `Debug` formatting (e.g., adds prefixes, changes casing, or wraps
+in an enum variant name), all reason codes would silently fall back to
+`"unspecified"`.
+
+**Recommendation:** Match on the underlying numeric value of the reason code
+if the x509-parser API supports it, or use a more stable API surface.
+
+---
+
+### 31. No file size limit for disk file reads
+
+**Severity:** Medium (security)
+
+`read_input()` (main.rs:275) correctly limits stdin reads to 10 MiB, but
+`std::fs::read()` on disk files has no size limit. A file path pointing to a
+very large file (or a special device file on Linux like `/dev/zero`) could cause
+unbounded memory allocation.
+
+**Recommendation:** Add a file size check (e.g., via `std::fs::metadata()`)
+before reading, or use a bounded read similar to the stdin path.
+
+---
+
+### 32. IPv6 formatting duplicated between `parser.rs` and `check.rs`
+
+**Severity:** Low (DRY violation)
+
+Both `parser.rs::format_ip_bytes()` (line 518) and `check.rs::normalize_ip()`
+(line 90) format IPv6 addresses as uppercase hex segments without `::`
+compression. They produce identical output but implement the formatting
+independently.
+
+**Recommendation:** Extract a shared `format_ipv6_expanded()` utility in
+`util.rs` and call it from both locations.
+
+---
+
+### 33. `TrustStore::add_pem_directory()` uses overly broad filename matching
+
+**Severity:** Low (correctness)
+
+The hashed certificate file detection at `verify.rs:300`:
+
+```rust
+name.chars().last().is_some_and(|c| c.is_ascii_digit())
+```
+
+matches any filename ending in a digit, not just OpenSSL hash-linked files.
+OpenSSL's hash format is `XXXXXXXX.N` (8 hex chars, dot, single digit), but
+this pattern also matches files like `README2`, `backup7`, or `data123`.
+
+**Recommendation:** Use a more specific pattern, such as checking that the
+extension is a single digit character (e.g., `ext.len() == 1 && ext.chars()
+.next().is_some_and(|c| c.is_ascii_digit())`).
+
+---
+
+### 34. Inconsistent cert file extension filtering across trust store methods
+
+**Severity:** Low (inconsistency)
+
+Three places filter certificate files by extension with different rules:
+
+| Location | Extensions | Case-sensitive |
+|---|---|---|
+| `TrustStore::system()` dir scan (verify.rs:211) | `.pem`, `.crt` | Yes |
+| `TrustStore::add_pem_directory()` (verify.rs:297–300) | `.pem`, `.crt`, `.cer`, digit-ending | Yes |
+| `main.rs::is_cert_file()` (main.rs:328) | `.pem`, `.der`, `.crt`, `.cer` | No |
+
+The system trust store dir scan omits `.cer` files that `add_pem_directory()`
+would accept. All trust store methods use case-sensitive matching while the
+CLI uses case-insensitive.
+
+**Recommendation:** Unify the extension matching logic, ideally sharing a
+single function or constant for the accepted extensions.
+
+---
+
+### 35. `verify_chain_with_options()` is ~460 lines and could be decomposed
+
+**Severity:** Low (readability / maintainability)
+
+`verify_chain_with_options()` (verify.rs:437–902) is a single function spanning
+~460 lines with 15+ distinct verification checks. This makes it difficult to
+review, test individual checks in isolation, or modify one check without risk
+of affecting others.
+
+**Recommendation:** Extract logically distinct checks into helper functions
+(e.g., `check_time_validity()`, `check_basic_constraints()`,
+`check_critical_extensions()`, `check_duplicate_extensions()`,
+`check_trust_anchoring()`, `check_name_constraints_chain()`,
+`check_key_cert_sign()`, `check_crl_chain()`).
