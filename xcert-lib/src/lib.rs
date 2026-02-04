@@ -10,7 +10,7 @@ mod display;
 mod fields;
 mod fingerprint;
 mod parser;
-pub mod verify;
+mod util;
 
 pub use check::{check_email, check_expiry, check_host, check_ip};
 pub use convert::{der_to_pem, pem_to_der};
