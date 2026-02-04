@@ -18,6 +18,16 @@ use x509_parser::prelude::*;
 /// Maximum chain depth to prevent infinite loops during chain building.
 const MAX_CHAIN_DEPTH: usize = 32;
 
+/// Shorthand: extract subject DN as a one-line string from a parsed X.509 cert.
+fn subject_str(x509: &X509Certificate) -> String {
+    crate::parser::build_dn(x509.subject()).to_oneline()
+}
+
+/// Shorthand: extract issuer DN as a one-line string from a parsed X.509 cert.
+fn issuer_str(x509: &X509Certificate) -> String {
+    crate::parser::build_dn(x509.issuer()).to_oneline()
+}
+
 /// Result of certificate chain verification.
 #[derive(Debug, Clone, Serialize)]
 pub struct VerificationResult {
@@ -485,8 +495,8 @@ pub fn verify_chain_with_options(
     for (i, (_, x509)) in parsed.iter().enumerate() {
         chain_info.push(ChainCertInfo {
             depth: i,
-            subject: crate::parser::build_dn(x509.subject()).to_oneline(),
-            issuer: crate::parser::build_dn(x509.issuer()).to_oneline(),
+            subject: subject_str(x509),
+            issuer: issuer_str(x509),
         });
     }
 
@@ -495,7 +505,7 @@ pub fn verify_chain_with_options(
         for (i, (_, x509)) in parsed.iter().enumerate() {
             let not_before = x509.validity().not_before.timestamp();
             let not_after = x509.validity().not_after.timestamp();
-            let subject = crate::parser::build_dn(x509.subject()).to_oneline();
+            let subject = subject_str(x509);
 
             if now_ts < not_before {
                 errors.push(format!(
@@ -514,7 +524,7 @@ pub fn verify_chain_with_options(
 
     // Check basic constraints for CA certificates (all except leaf at depth 0)
     for (i, (_, x509)) in parsed.iter().enumerate().skip(1) {
-        let subject = crate::parser::build_dn(x509.subject()).to_oneline();
+        let subject = subject_str(x509);
         let bc = x509.basic_constraints().ok().flatten().map(|bc| bc.value);
 
         match bc {
@@ -558,7 +568,7 @@ pub fn verify_chain_with_options(
     // An implementation MUST reject a certificate if it encounters a critical
     // extension it does not recognize.
     for (i, (_, x509)) in parsed.iter().enumerate() {
-        let subject = crate::parser::build_dn(x509.subject()).to_oneline();
+        let subject = subject_str(x509);
         for ext in x509.extensions() {
             if ext.critical && !is_known_extension(ext.oid.to_id_string().as_str()) {
                 errors.push(format!(
@@ -575,7 +585,7 @@ pub fn verify_chain_with_options(
         let mut seen = HashSet::new();
         for ext in x509.extensions() {
             if !seen.insert(ext.oid.to_id_string()) {
-                let subject = crate::parser::build_dn(x509.subject()).to_oneline();
+                let subject = subject_str(x509);
                 errors.push(format!(
                     "certificate at depth {} ({}) has duplicate extension {}",
                     i, subject, ext.oid
@@ -591,7 +601,7 @@ pub fn verify_chain_with_options(
         let is_leaf = i == 0;
         for ext in x509.extensions() {
             if ext.oid.to_id_string() == "2.5.29.30" {
-                let subject = crate::parser::build_dn(x509.subject()).to_oneline();
+                let subject = subject_str(x509);
                 if is_leaf {
                     errors.push(format!(
                         "certificate at depth {} ({}) is an end-entity but contains \
@@ -631,7 +641,7 @@ pub fn verify_chain_with_options(
     for (i, (_, x509)) in parsed.iter().enumerate().skip(1) {
         if let Ok(Some(ku)) = x509.key_usage() {
             if !ku.value.key_cert_sign() {
-                let subject = crate::parser::build_dn(x509.subject()).to_oneline();
+                let subject = subject_str(x509);
                 errors.push(format!(
                     "certificate at depth {} ({}) is a CA but Key Usage does not include keyCertSign",
                     i, subject
@@ -649,8 +659,8 @@ pub fn verify_chain_with_options(
         if let Err(e) = child_x509.verify_signature(Some(parent_x509.public_key())) {
             errors.push(format!(
                 "signature verification failed ({} -> {}): {}",
-                crate::parser::build_dn(child_x509.subject()).to_oneline(),
-                crate::parser::build_dn(parent_x509.subject()).to_oneline(),
+                subject_str(child_x509),
+                subject_str(parent_x509),
                 e
             ));
         }
@@ -672,11 +682,9 @@ pub fn verify_chain_with_options(
     }
 
     if !trust_anchored {
-        let Some((last_der, last_x509)) = parsed.last() else {
-            // Unreachable: we checked chain_der.is_empty() at function entry
-            return Err(XcertError::VerifyError("empty certificate chain".into()));
-        };
-        let last_subject = crate::parser::build_dn(last_x509.subject()).to_oneline();
+        // Guaranteed non-empty by the is_empty() check at function entry.
+        let (last_der, last_x509) = &parsed[parsed.len() - 1];
+        let last_subject = subject_str(last_x509);
 
         // Check if the last cert in the chain is self-signed (i.e., it's a root)
         let is_self_signed = last_x509.subject().as_raw() == last_x509.issuer().as_raw()
@@ -706,8 +714,8 @@ pub fn verify_chain_with_options(
                             // Add the trusted root to the chain info
                             chain_info.push(ChainCertInfo {
                                 depth: parsed.len(),
-                                subject: crate::parser::build_dn(root_x509.subject()).to_oneline(),
-                                issuer: crate::parser::build_dn(root_x509.issuer()).to_oneline(),
+                                subject: subject_str(&root_x509),
+                                issuer: issuer_str(&root_x509),
                             });
                             trusted_root_der = Some(root_der.clone());
                             trust_anchored = true;
@@ -720,7 +728,7 @@ pub fn verify_chain_with_options(
             if !trust_anchored {
                 errors.push(format!(
                     "unable to find trusted root for issuer: {}",
-                    crate::parser::build_dn(last_x509.issuer()).to_oneline()
+                    issuer_str(last_x509)
                 ));
             }
         }
@@ -730,7 +738,7 @@ pub fn verify_chain_with_options(
     // Constraints, unknown critical extensions, and duplicate extensions.
     if let Some(ref root_der) = trusted_root_der {
         if let Ok((_, root_x509)) = X509Certificate::from_der(root_der) {
-            let root_subject = crate::parser::build_dn(root_x509.subject()).to_oneline();
+            let root_subject = subject_str(&root_x509);
             let root_depth = parsed.len(); // virtual depth of the trust store root
 
             // RFC 5280: Check validity dates for the trusted root.
@@ -776,11 +784,11 @@ pub fn verify_chain_with_options(
         }
     }
 
+    // The leaf certificate is guaranteed to exist (empty chain checked above).
+    let (_, leaf) = &parsed[0];
+
     // Check Extended Key Usage on the leaf certificate (if purpose is specified)
     if let Some(ref required_oid) = options.purpose {
-        let Some((_, leaf)) = parsed.first() else {
-            return Err(XcertError::VerifyError("empty certificate chain".into()));
-        };
         if let Ok(Some(eku)) = leaf.extended_key_usage() {
             let eku_val = &eku.value;
             // Map well-known OIDs to their boolean flags
@@ -801,7 +809,7 @@ pub fn verify_chain_with_options(
                         .any(|oid| oid.to_id_string() == *required_oid),
                 };
             if !has_eku {
-                let leaf_subject = crate::parser::build_dn(leaf.subject()).to_oneline();
+                let leaf_subject = subject_str(leaf);
                 errors.push(format!(
                     "leaf certificate ({}) does not have required EKU {}",
                     leaf_subject, required_oid
@@ -815,33 +823,25 @@ pub fn verify_chain_with_options(
     // verified via verify_ip instead (avoids false failure from DNS matching).
     if let Some(host) = hostname {
         let ip_handled = options.verify_ip.as_deref() == Some(host);
-        if !ip_handled {
-            let Some((_, leaf)) = parsed.first() else {
-                return Err(XcertError::VerifyError("empty certificate chain".into()));
-            };
-            if !verify_hostname(leaf, host) {
-                let san_names = extract_san_dns_names(leaf);
-                let cn = extract_cn(leaf);
-                let mut names: Vec<String> = san_names;
-                if let Some(cn_val) = cn {
-                    if names.is_empty() {
-                        names.push(cn_val);
-                    }
+        if !ip_handled && !verify_hostname(leaf, host) {
+            let san_names = extract_san_dns_names(leaf);
+            let cn = extract_cn(leaf);
+            let mut names: Vec<String> = san_names;
+            if let Some(cn_val) = cn {
+                if names.is_empty() {
+                    names.push(cn_val);
                 }
-                errors.push(format!(
-                    "hostname '{}' does not match certificate names: [{}]",
-                    host,
-                    names.join(", ")
-                ));
             }
+            errors.push(format!(
+                "hostname '{}' does not match certificate names: [{}]",
+                host,
+                names.join(", ")
+            ));
         }
     }
 
     // Check email against leaf certificate SAN/subject (if requested)
     if let Some(ref email) = options.verify_email {
-        let Some((_, leaf)) = parsed.first() else {
-            return Err(XcertError::VerifyError("empty certificate chain".into()));
-        };
         if !verify_email(leaf, email) {
             errors.push(format!("email '{}' does not match certificate", email));
         }
@@ -849,9 +849,6 @@ pub fn verify_chain_with_options(
 
     // Check IP address against leaf certificate SAN (if requested)
     if let Some(ref ip) = options.verify_ip {
-        let Some((_, leaf)) = parsed.first() else {
-            return Err(XcertError::VerifyError("empty certificate chain".into()));
-        };
         if !verify_ip(leaf, ip) {
             errors.push(format!("IP address '{}' does not match certificate", ip));
         }
@@ -885,7 +882,7 @@ pub fn verify_chain_with_options(
             };
 
             if let Some(reason) = check_crl_revocation(cert, &options.crl_ders, issuer, now_ts) {
-                let subject = crate::parser::build_dn(cert.subject()).to_oneline();
+                let subject = subject_str(cert);
                 errors.push(format!(
                     "certificate at depth {} ({}) has been revoked (reason: {})",
                     i, subject, reason
@@ -1152,7 +1149,7 @@ fn check_name_constraints(
     ca_depth: usize,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let subject = crate::parser::build_dn(cert.subject()).to_oneline();
+    let subject = subject_str(cert);
 
     // Collect all names from the certificate's SAN extension
     let mut dns_names: Vec<String> = Vec::new();

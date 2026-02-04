@@ -1,6 +1,58 @@
 # Known Issues
 
-Issues identified during code review. All issues below have been fixed.
+## Code Coverage (as of 2026-02-04)
+
+| File | Line Coverage | Notes |
+|------|-------------|-------|
+| check.rs | 96.88% | |
+| convert.rs | 100.00% | |
+| display.rs | 93.85% | |
+| fields.rs | 91.73% | |
+| fingerprint.rs | 100.00% | |
+| parser.rs | 86.12% | Error paths, Ed448, unknown OIDs |
+| util.rs | 98.53% | |
+| verify.rs | 82.18% | Partial chain, CRL edge cases |
+| main.rs | 25.62% | CLI binary; integration tests run externally |
+| **TOTAL** | **69.55%** | Library avg ~91%; main.rs drags total down |
+
+## Round 2: Quality & Readability Improvements
+
+### ~~26. verify.rs: Repeated `build_dn().to_oneline()` pattern~~ FIXED
+
+**Fix:** Added `subject_str()` and `issuer_str()` helper functions in
+verify.rs, replacing ~20 occurrences of the verbose
+`crate::parser::build_dn(x509.subject()).to_oneline()` pattern.
+
+---
+
+### ~~27. verify.rs: Redundant empty-chain guards~~ FIXED
+
+**Fix:** Extracted `let (_, leaf) = &parsed[0]` once before the EKU,
+hostname, email, and IP checks, replacing 4 redundant
+`let Some(...) = parsed.first() else { ... }` guards. Also simplified
+`parsed.last()` to direct indexing.
+
+---
+
+### ~~28. main.rs: Duplicate batch result construction~~ FIXED
+
+**Fix:** Added `verify_to_batch()` helper that converts a
+`Result<VerificationResult, E>` into a `BatchResult`, replacing 4
+duplicate match arms in the batch verify closure.
+
+---
+
+### ~~29. main.rs: Duplicate verification result printing~~ FIXED
+
+**Fix:** Added `print_verify_result()` helper that handles JSON output,
+valid/invalid printing, and `--show-chain` display. Replaces 3 duplicate
+print blocks in the single-file verify handler.
+
+---
+
+## Round 1 (all FIXED)
+
+Issues identified during initial code review. All issues below have been fixed.
 
 ## Security / Correctness
 
