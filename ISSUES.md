@@ -4,125 +4,136 @@ Issues identified during code review. Ordered roughly by severity.
 
 ## Security / Correctness
 
-### ~~1. No certificate revocation checking (CRL/OCSP)~~ FIXED
+### 1. CRL validity dates are not checked
 
-**Fix:** Added CRL-based revocation checking. `VerifyOptions` now supports
-`crl_ders`, `crl_check_leaf`, and `crl_check_all` fields. CLI flags
-`--CRLfile`, `--crl-check`, and `--crl-check-all` load and check CRLs
-during chain verification, matching OpenSSL's `-CRLfile -crl_check` behavior.
-CRL signatures are verified against the issuer's public key. Revoked
-certificates are detected with reason codes.
-
----
-
-### ~~2. Key Usage not checked during chain verification~~ FIXED
-
-RFC 5280 Section 4.2.1.3 requires that CA certificates used to sign other
-certificates have the `keyCertSign` bit set in the Key Usage extension.
-
-**Fix:** Added keyCertSign check for CA certificates when Key Usage extension
-is present. Verification now fails if a CA certificate has Key Usage but lacks
-the keyCertSign bit.
+`check_crl_revocation()` in `verify.rs:1280-1319` parses each CRL and checks
+serial numbers, but never validates the CRL's `thisUpdate` / `nextUpdate`
+fields. An expired CRL (one whose `nextUpdate` is in the past) is silently
+accepted, which means revocation data may be stale. RFC 5280 Section 6.3.3
+requires that the current time falls within the CRL validity period.
 
 ---
 
-### ~~3. `check_expiry` does not validate `notBefore`~~ FIXED
+### 2. CRL signature is not verified for root certificates
 
-**Fix:** `check_expiry()` now checks that `not_before` is in the past before
-considering the certificate valid. Not-yet-valid certificates return `false`.
+In `verify.rs:745-748`, the issuer for CRL signature verification is looked up
+as `parsed[i + 1]`. For the last certificate in the chain (the root), there is
+no `i + 1`, so `issuer` is `None`. In `check_crl_revocation()` at line 1300,
+when `issuer_cert` is `None`, the CRL signature verification is skipped
+entirely. This means a CRL could be forged for the root CA without detection.
 
 ---
 
-### ~~4. No Name Constraints checking~~ FIXED
+### 3. `--crl-check` without `--CRLfile` silently does nothing
 
-**Fix:** Added Name Constraints enforcement per RFC 5280 Section 4.2.1.10.
-During chain verification, CA certificates with Name Constraints have their
-permitted and excluded subtrees checked against all subordinate certificates'
-DNS names, email addresses, and IP addresses. Constraints from trust store
-roots are also checked. Test certificates with Name Constraints are included.
+In `main.rs:546-552`, if no `--CRLfile` is provided, `crl_ders` is set to an
+empty `Vec`. The `crl_check_leaf` / `crl_check_all` flags are still set
+(`main.rs:570-571`), but the empty CRL list means no revocation checking
+actually occurs. The user is not warned that their `--crl-check` flag had no
+effect. Should either require `--CRLfile` when `--crl-check` is used, or at
+minimum print a warning.
+
+---
+
+### 4. `der_wrap()` panics on untrusted input
+
+`parser.rs:273-276` uses `assert!()` to enforce a 16 MiB size limit:
+
+```rust
+assert!(
+    len <= 0xFF_FFFF,
+    "DER content length {len} exceeds maximum supported (16 MiB)"
+);
+```
+
+This is called during SPKI PEM construction from parsed certificate data. While
+the comment claims this "cannot occur for certificate SPKI data," a malformed
+certificate could trigger this and crash the process. Should return
+`Result<Vec<u8>, XcertError>` instead of panicking.
+
+---
+
+### 5. RSA parameter extraction silently returns incorrect values on failure
+
+`parser.rs:193-214`: When `extract_rsa_params()` fails to parse the DER
+structure, it falls back to `(hex::encode_upper(data), data.len() * 8, 65537)`
+without any indication of failure. The fallback key size includes DER encoding
+overhead, so a 2048-bit key may be reported as ~2160 bits. Callers have no way
+to distinguish valid results from the incorrect fallback.
 
 ---
 
 ## Code Quality
 
-### ~~5. Duplicate hostname matching logic~~ FIXED
+### 6. O(n^2) email deduplication in `CertificateInfo::emails()`
 
-**Fix:** Shared `hostname_matches()` extracted to `util.rs`. Both `check.rs`
-and `verify.rs` now call `util::hostname_matches()`.
-
----
-
-### ~~6. Duplicate OID-to-short-name mappings~~ FIXED
-
-**Fix:** Consolidated into `util::oid_short_name()`. Both `parser.rs` and
-`verify.rs` now use the shared function.
+`fields.rs:267` uses `Vec::contains()` for deduplication, which is O(n) per
+call inside a loop over SAN entries. For certificates with many SAN email
+entries, this results in O(n^2) behavior. Should use a `HashSet` or collect
+first and deduplicate after.
 
 ---
 
-### ~~7. `TrustStore::add_pem_bundle` return value is misleading~~ FIXED
+### 7. Duplicate GeneralName formatting logic
 
-**Fix:** `add_pem_bundle()` now counts only certificates that were successfully
-added via `add_der()`, rather than counting all PEM entries found.
+`parser.rs:485-504` has two nearly identical functions:
+- `general_name_to_san_entry()` converts `GeneralName` to `SanEntry`
+- `format_general_name()` converts `GeneralName` to `String`
 
----
-
-### ~~8. Unused `load_reference` function in tests~~ FIXED
-
-**Fix:** The unused function was removed. A new `load_reference()` helper and
-`reference_path()` function were added to support the reference vector tests.
+Both have the same match arms for DNS, Email, IP, and URI. The only difference
+is the return type. One could call the other, or a shared helper could extract
+the common logic.
 
 ---
 
-### ~~9. 116 reference test vectors are unused~~ FIXED
+### 8. Unnecessary Vec allocation for PEM detection
 
-**Fix:** Added a `reference_vectors` test module with 9 tests that compare
-library output against OpenSSL reference files: serial numbers, SHA-256 and
-SHA-1 fingerprints, subject and issuer DN components, RSA modulus, email
-addresses, and OCSP URIs.
+`parser.rs:20-25` collects into a `Vec<u8>` just to call `starts_with()`:
 
----
+```rust
+let trimmed = input.iter()
+    .skip_while(|b| b.is_ascii_whitespace())
+    .take(11).copied().collect::<Vec<_>>();
+trimmed.starts_with(b"-----BEGIN")
+```
 
-## Missing Features
-
-### ~~10. No `--partial-chain` option~~ FIXED
-
-**Fix:** Added `partial_chain` field to `VerifyOptions` and `--partial-chain`
-CLI flag. When enabled, verification succeeds if any certificate in the chain
-is directly in the trust store.
+The same check in `main.rs:479-486` has the same pattern. Could use iterator
+comparison directly without any heap allocation.
 
 ---
 
-### ~~11. No Extended Key Usage checking during verification~~ FIXED
+### 9. `base64_wrap()` uses unnecessary intermediate allocations
 
-**Fix:** Added `purpose` field to `VerifyOptions` and `--purpose` CLI flag.
-When specified, the leaf certificate's EKU extension is checked for the
-required OID (e.g., `1.3.6.1.5.5.7.3.1` for serverAuth).
+`util.rs:22-30` converts a base64 String to bytes, chunks it, converts each
+chunk back to `&str` via `from_utf8`, collects into a `Vec<&str>`, then joins.
+Since base64 output is always valid UTF-8 ASCII, the `from_utf8` check is
+redundant, and the intermediate Vec can be avoided by writing chunks directly
+to a pre-allocated String.
 
 ---
 
-### ~~12. No LICENSE file~~ FIXED
+### 10. Duplicate extension search methods in `fields.rs`
 
-**Fix:** Added MIT LICENSE file and updated README reference.
+`fields.rs:278-319`: The methods `san_entries()`, `ocsp_urls()`,
+`key_usage()`, and `ext_key_usage()` each iterate `self.extensions` with an
+identical `for/if let` pattern, differing only in which `ExtensionValue`
+variant they match. Could be consolidated with a generic helper.
 
 ---
 
 ## Minor
 
-### ~~13. `docs/cli-interface.md` does not document `verify` subcommand~~ FIXED
+### 11. CRL reason code uses Debug formatting
 
-**Fix:** Added full `xcert verify` documentation to `cli-interface.md`
-including all options, examples, and comparison table entries.
-
----
-
-### ~~14. Version display is redundant~~ FIXED
-
-**Fix:** Changed `Version: 3 (v3)` to `Version: 3 (0x2)` matching OpenSSL's
-format of showing the human-readable version and the ASN.1 encoded value.
+`verify.rs:1311` formats the CRL reason code with `format!("{:?}", rc.1)`,
+which produces Rust debug output like `KeyCompromise` instead of a
+human-readable form like `keyCompromise` or the OpenSSL-style
+`Key Compromise`. Should map reason codes to standard display strings.
 
 ---
 
-### ~~15. No CI configuration~~ FIXED
+### 12. No X.509 version validation
 
-**Fix:** Added `.github/workflows/ci.yml` with test, clippy, and fmt jobs
-running on push/PR to main.
+`parser.rs:68` computes `let version = tbs.version.0 + 1` without checking
+that the value is in the valid range (0, 1, or 2 for v1, v2, v3). A
+certificate with version 255 would display "Version: 256" without any warning.
