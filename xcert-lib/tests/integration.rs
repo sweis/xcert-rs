@@ -3653,3 +3653,438 @@ mod parser_fields_additional {
         );
     }
 }
+
+// =========================================================================
+// 24. x509-limbo TEST VECTORS (C2SP)
+// =========================================================================
+//
+// Curated subset of test vectors from https://github.com/C2SP/x509-limbo
+// covering rfc5280, webpki, pathlen, pathbuilding, crl, pathological, cve,
+// and invalid categories. Excludes BetterTLS name constraints (9,491 tests)
+// and online tests.
+
+mod limbo {
+    use serde::Deserialize;
+    use std::collections::HashSet;
+    use xcert_lib::*;
+
+    #[derive(Deserialize)]
+    struct LimboSuite {
+        #[allow(dead_code)]
+        version: u32,
+        tests: Vec<LimboTest>,
+    }
+
+    #[derive(Deserialize)]
+    struct LimboTest {
+        id: String,
+        #[allow(dead_code)]
+        description: String,
+        trusted_pem: String,
+        chain_pem: String,
+        hostname: Option<String>,
+        ip: Option<String>,
+        at_time: Option<i64>,
+        max_depth: Option<usize>,
+        crls_pem: Vec<String>,
+        purpose: Option<String>,
+        expect_success: bool,
+        #[allow(dead_code)]
+        features: Vec<String>,
+    }
+
+    fn load_limbo_suite() -> LimboSuite {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("tests");
+        p.push("limbo");
+        p.push("limbo-vectors.json");
+        let data = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("Failed to read limbo vectors: {}", e));
+        serde_json::from_str(&data).expect("Failed to parse limbo vectors JSON")
+    }
+
+    /// Known failures with documented reasons. These are tracked limitations,
+    /// not bugs. If any of these start passing, that's an improvement.
+    ///
+    /// Categories:
+    /// - PATH_BUILDING: We verify chains as-given; we don't build paths from
+    ///   a pool of untrusted intermediates.
+    /// - RFC5280_STRICT: Pedantic RFC 5280 checks we don't enforce (AKI/SKI
+    ///   presence, critical extension rejection, serial validation, etc.).
+    /// - WEBPKI_POLICY: Web PKI policy requirements beyond RFC 5280 (reject
+    ///   weak crypto, require SAN, CN matching restrictions, etc.).
+    /// - CHAIN_DEPTH: max_chain_depth counting differences (limbo counts
+    ///   from 0, we count chain certs).
+    /// - CRL_STRICT: CRL extension validation we don't enforce.
+    /// - NAME_CONSTRAINTS: Name constraint edge cases not yet handled.
+    fn known_failures() -> HashSet<&'static str> {
+        [
+            // PATH_BUILDING: We don't build paths from untrusted intermediates.
+            // These tests provide multiple candidate intermediates and expect
+            // the verifier to find the correct path.
+            "bettertls::pathbuilding::tc1",
+            "bettertls::pathbuilding::tc2",
+            "bettertls::pathbuilding::tc5",
+            "bettertls::pathbuilding::tc12",
+            "bettertls::pathbuilding::tc16",
+            "bettertls::pathbuilding::tc17",
+            "bettertls::pathbuilding::tc18",
+            "bettertls::pathbuilding::tc19",
+            "bettertls::pathbuilding::tc20",
+            "bettertls::pathbuilding::tc21",
+            "bettertls::pathbuilding::tc22",
+            "bettertls::pathbuilding::tc23",
+            "bettertls::pathbuilding::tc24",
+            "bettertls::pathbuilding::tc25",
+            "bettertls::pathbuilding::tc26",
+            "bettertls::pathbuilding::tc27",
+            "bettertls::pathbuilding::tc28",
+            "bettertls::pathbuilding::tc29",
+            "bettertls::pathbuilding::tc30",
+            "bettertls::pathbuilding::tc31",
+            "bettertls::pathbuilding::tc32",
+            "bettertls::pathbuilding::tc33",
+            "bettertls::pathbuilding::tc34",
+            "bettertls::pathbuilding::tc35",
+            "bettertls::pathbuilding::tc48",
+            "bettertls::pathbuilding::tc49",
+            "bettertls::pathbuilding::tc50",
+            "bettertls::pathbuilding::tc51",
+            "bettertls::pathbuilding::tc52",
+            "bettertls::pathbuilding::tc53",
+            "bettertls::pathbuilding::tc54",
+            "bettertls::pathbuilding::tc55",
+            "bettertls::pathbuilding::tc56",
+            "bettertls::pathbuilding::tc57",
+            "bettertls::pathbuilding::tc58",
+            "bettertls::pathbuilding::tc59",
+            "bettertls::pathbuilding::tc60",
+            "bettertls::pathbuilding::tc61",
+            "bettertls::pathbuilding::tc62",
+            "bettertls::pathbuilding::tc63",
+            "bettertls::pathbuilding::tc64",
+            "bettertls::pathbuilding::tc65",
+            "bettertls::pathbuilding::tc66",
+            "bettertls::pathbuilding::tc67",
+            "bettertls::pathbuilding::tc68",
+            // RFC5280_STRICT: AKI/SKI presence and criticality checks.
+            "rfc5280::aki::critical-aki",
+            "rfc5280::aki::cross-signed-root-missing-aki",
+            "rfc5280::aki::intermediate-missing-aki",
+            "rfc5280::aki::leaf-missing-aki",
+            "rfc5280::ski::critical-ski",
+            "rfc5280::ski::intermediate-missing-ski",
+            "rfc5280::ski::root-missing-ski",
+            // RFC5280_STRICT: Unknown critical extension rejection.
+            "rfc5280::unknown-critical-extension-ee",
+            "rfc5280::unknown-critical-extension-intermediate",
+            "rfc5280::unknown-critical-extension-root",
+            // RFC5280_STRICT: Duplicate extension detection.
+            "rfc5280::duplicate-extensions",
+            // RFC5280_STRICT: Root certificate validation.
+            "rfc5280::root-missing-basic-constraints",
+            "rfc5280::root-non-critical-basic-constraints",
+            "rfc5280::root-inconsistent-ca-extensions",
+            "rfc5280::root-and-intermediate-swapped",
+            // RFC5280_STRICT: Serial number encoding validation.
+            "rfc5280::serial::too-long",
+            "rfc5280::serial::zero",
+            // RFC5280_STRICT: SAN validation edge cases.
+            "rfc5280::san::malformed",
+            "rfc5280::san::noncritical-with-empty-subject",
+            "rfc5280::san::underscore-dns",
+            // RFC5280_STRICT: EKU, KU, AIA, and policy constraints.
+            "rfc5280::eku::ee-eku-empty",
+            "rfc5280::leaf-ku-keycertsign",
+            "rfc5280::ee-critical-aia-invalid",
+            "rfc5280::ca-empty-subject",
+            "rfc5280::pc::ica-noncritical-pc",
+            // RFC5280_STRICT: Expired root in trust store.
+            "rfc5280::validity::expired-root",
+            // NAME_CONSTRAINTS: Edge cases in name constraint validation.
+            "rfc5280::nc::invalid-dnsname-leading-period",
+            "rfc5280::nc::nc-forbids-alternate-chain-ica",
+            "rfc5280::nc::nc-forbids-othername",
+            "rfc5280::nc::nc-forbids-same-chain-ica",
+            "rfc5280::nc::nc-permits-invalid-dns-san",
+            "rfc5280::nc::not-allowed-in-ee-critical",
+            "rfc5280::nc::not-allowed-in-ee-noncritical",
+            "rfc5280::nc::permitted-dns-match-noncritical",
+            "rfc5280::nc::permitted-ipv4-match",
+            "rfc5280::nc::permitted-ipv6-match",
+            "rfc5280::nc::permitted-self-issued",
+            // WEBPKI_POLICY: Root AKI validation.
+            "webpki::aki::root-with-aki-all-fields",
+            "webpki::aki::root-with-aki-authoritycertissuer",
+            "webpki::aki::root-with-aki-authoritycertserialnumber",
+            "webpki::aki::root-with-aki-missing-keyidentifier",
+            "webpki::aki::root-with-aki-ski-mismatch",
+            // WEBPKI_POLICY: CN matching restrictions (WebPKI requires SAN).
+            "webpki::cn::case-mismatch",
+            "webpki::cn::ipv6-uppercase-mismatch",
+            "webpki::cn::not-in-san",
+            "webpki::cn::punycode-not-in-san",
+            "webpki::cn::utf8-vs-punycode-mismatch",
+            // WEBPKI_POLICY: EKU requirements.
+            "webpki::eku::ee-anyeku",
+            "webpki::eku::ee-critical-eku",
+            "webpki::eku::ee-without-eku",
+            "webpki::eku::root-has-eku",
+            // WEBPKI_POLICY: Weak/forbidden crypto rejection.
+            "webpki::forbidden-dsa-leaf",
+            "webpki::forbidden-p192-leaf",
+            "webpki::forbidden-rsa-key-not-divisable-by-8-in-leaf",
+            "webpki::forbidden-rsa-not-divisable-by-8-in-root",
+            "webpki::forbidden-weak-rsa-in-leaf",
+            // WEBPKI_POLICY: SAN requirements and edge cases.
+            "webpki::san::exact-localhost-ip-san",
+            "webpki::san::no-san",
+            "webpki::san::public-suffix-wildcard-san",
+            "webpki::san::san-critical-with-nonempty-subject",
+            // WEBPKI_POLICY: Miscellaneous.
+            "webpki::ca-as-leaf",
+            "webpki::ee-basicconstraints-ca",
+            "webpki::malformed-aia",
+            "webpki::v1-cert",
+            // WEBPKI_POLICY: Name constraint edge cases.
+            "webpki::nc::intermediate-permitted-excluded-subtrees-both-empty-sequences",
+            "webpki::nc::intermediate-permitted-excluded-subtrees-both-null",
+            // CHAIN_DEPTH: max_chain_depth counting differences.
+            "pathlen::max-chain-depth-0",
+            "pathlen::max-chain-depth-1",
+            "pathlen::max-chain-depth-1-self-issued",
+            // CHAIN_DEPTH: Self-issued certificate and pathlen interaction.
+            "pathlen::intermediate-pathlen-may-increase",
+            "pathlen::self-issued-certs-pathlen",
+            // CRL_STRICT: CRL number extension validation.
+            "crl::crlnumber-missing",
+            "crl::crlnumber-critical",
+            // CVE: GnuTLS-specific CVE regression test.
+            "cve::cve-2024-0567",
+            // PATHOLOGICAL: Name constraint DoS and edge cases.
+            "pathological::nc-dos-1",
+            "pathological::nc-dos-2",
+            "pathological::nc-dos-3",
+            "pathological::multiple-chains-expired-intermediate",
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn run_limbo_test(tc: &LimboTest) -> (bool, String) {
+        // Build trust store
+        let mut trust_store = TrustStore::default();
+        if !tc.trusted_pem.is_empty() {
+            if let Err(e) = trust_store.add_pem_bundle(tc.trusted_pem.as_bytes()) {
+                if tc.expect_success {
+                    return (false, format!("Failed to load trust store: {}", e));
+                }
+                return (true, String::new());
+            }
+        }
+
+        // Build verify options
+        let mut options = VerifyOptions {
+            check_time: true,
+            partial_chain: false,
+            ..VerifyOptions::default()
+        };
+
+        if let Some(at_time) = tc.at_time {
+            options.at_time = Some(at_time);
+        }
+
+        if let Some(depth) = tc.max_depth {
+            options.verify_depth = Some(depth);
+        }
+
+        if let Some(ref purpose_name) = tc.purpose {
+            if let Some(oid) = resolve_purpose(purpose_name) {
+                options.purpose = Some(oid.to_string());
+            }
+        }
+
+        // Parse CRLs
+        for crl_pem in &tc.crls_pem {
+            match parse_pem_crl(crl_pem.as_bytes()) {
+                Ok(crl_ders) => {
+                    options.crl_ders.extend(crl_ders);
+                    options.crl_check_all = true;
+                }
+                Err(e) => {
+                    if tc.expect_success {
+                        return (false, format!("Failed to parse CRL: {}", e));
+                    }
+                    return (true, String::new());
+                }
+            }
+        }
+
+        // Determine hostname for verification
+        let hostname = tc.hostname.as_deref().or(tc.ip.as_deref());
+
+        // If IP is specified, set verify_ip in options
+        if let Some(ref ip) = tc.ip {
+            options.verify_ip = Some(ip.clone());
+        }
+
+        // Run verification
+        let result = verify_pem_chain_with_options(
+            tc.chain_pem.as_bytes(),
+            &trust_store,
+            hostname,
+            &options,
+        );
+
+        let actual_success = match &result {
+            Ok(r) => r.is_valid,
+            Err(_) => false,
+        };
+
+        let context = match &result {
+            Ok(r) if !r.is_valid => format!("errors: {:?}", r.errors),
+            Err(e) => format!("error: {}", e),
+            _ => String::new(),
+        };
+
+        (actual_success == tc.expect_success, context)
+    }
+
+    /// Run a category of limbo tests. Panics on unexpected failures
+    /// (regressions) but tolerates known failures.
+    fn run_category(tests: &[&LimboTest], known: &HashSet<&str>, label: &str) {
+        assert!(!tests.is_empty(), "No {} tests found", label);
+
+        let mut passed = 0;
+        let mut known_failed = 0;
+        let mut known_now_passing = Vec::new();
+        let mut regressions = Vec::new();
+
+        for tc in tests {
+            let (ok, context) = run_limbo_test(tc);
+            let is_known = known.contains(tc.id.as_str());
+
+            if ok {
+                passed += 1;
+                if is_known {
+                    known_now_passing.push(tc.id.as_str());
+                }
+            } else if is_known {
+                known_failed += 1;
+            } else {
+                regressions.push(format!(
+                    "  {} (expected {}): {}",
+                    tc.id,
+                    if tc.expect_success { "SUCCESS" } else { "FAILURE" },
+                    context
+                ));
+            }
+        }
+
+        // Report known failures that now pass (improvements).
+        if !known_now_passing.is_empty() {
+            eprintln!(
+                "limbo {}: {} known failures now passing (consider removing from known_failures):",
+                label,
+                known_now_passing.len()
+            );
+            for id in &known_now_passing {
+                eprintln!("  + {}", id);
+            }
+        }
+
+        eprintln!(
+            "limbo {}: {}/{} passed, {} known failures",
+            label,
+            passed,
+            tests.len(),
+            known_failed
+        );
+
+        // Fail only on regressions (tests that should pass but don't,
+        // and are NOT in the known-failures list).
+        if !regressions.is_empty() {
+            panic!(
+                "limbo {}: {} unexpected failures (regressions):\n{}",
+                label,
+                regressions.len(),
+                regressions.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn limbo_rfc5280_vectors() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite.tests.iter().filter(|t| t.id.starts_with("rfc5280::")).collect();
+        run_category(&tests, &known, "rfc5280");
+    }
+
+    #[test]
+    fn limbo_webpki_vectors() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite.tests.iter().filter(|t| t.id.starts_with("webpki::")).collect();
+        run_category(&tests, &known, "webpki");
+    }
+
+    #[test]
+    fn limbo_pathlen_vectors() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite
+            .tests
+            .iter()
+            .filter(|t| t.id.starts_with("pathlen::"))
+            .collect();
+        run_category(&tests, &known, "pathlen");
+    }
+
+    #[test]
+    fn limbo_pathbuilding_vectors() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite
+            .tests
+            .iter()
+            .filter(|t| t.id.starts_with("bettertls::pathbuilding::"))
+            .collect();
+        run_category(&tests, &known, "pathbuilding");
+    }
+
+    #[test]
+    fn limbo_crl_vectors() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite.tests.iter().filter(|t| t.id.starts_with("crl::")).collect();
+        run_category(&tests, &known, "crl");
+    }
+
+    #[test]
+    fn limbo_pathological_and_edge_cases() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite
+            .tests
+            .iter()
+            .filter(|t| {
+                t.id.starts_with("pathological::")
+                    || t.id.starts_with("cve::")
+                    || t.id.starts_with("invalid::")
+            })
+            .collect();
+        run_category(&tests, &known, "pathological/edge");
+    }
+
+    /// Aggregate summary: reports overall limbo pass rate. Fails only if
+    /// there are unexpected regressions (tests not in known_failures).
+    #[test]
+    fn limbo_all_vectors_summary() {
+        let suite = load_limbo_suite();
+        let known = known_failures();
+        let tests: Vec<_> = suite.tests.iter().collect();
+        run_category(&tests, &known, "ALL");
+    }
+}
