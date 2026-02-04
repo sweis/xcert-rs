@@ -822,15 +822,13 @@ fn main() -> Result<()> {
                                 .iter()
                                 .enumerate()
                                 .map(|(i, cert_der)| {
-                                    let cert_label =
-                                        format!("{}[{}]", label, i);
-                                    let result =
-                                        xcert_lib::verify_chain_with_options(
-                                            &[cert_der.clone()],
-                                            &trust_store,
-                                            hostname.as_deref(),
-                                            &options,
-                                        );
+                                    let cert_label = format!("{}[{}]", label, i);
+                                    let result = xcert_lib::verify_chain_with_options(
+                                        std::slice::from_ref(cert_der),
+                                        &trust_store,
+                                        hostname.as_deref(),
+                                        &options,
+                                    );
                                     match result {
                                         Ok(r) => BatchResult {
                                             path: cert_label,
@@ -880,15 +878,14 @@ fn main() -> Result<()> {
                 .as_ref()
                 .map_or("stdin".to_string(), |f| f.display().to_string());
 
-            if untrusted.is_some() {
+            if let Some(untrusted_path) = untrusted.as_ref() {
                 let leaf_der = xcert_lib::pem_to_der(&input)?;
-                let untrusted_data =
-                    std::fs::read(untrusted.as_ref().unwrap()).with_context(|| {
-                        format!(
-                            "Failed to read untrusted file: {}",
-                            untrusted.as_ref().unwrap().display()
-                        )
-                    })?;
+                let untrusted_data = std::fs::read(untrusted_path).with_context(|| {
+                    format!(
+                        "Failed to read untrusted file: {}",
+                        untrusted_path.display()
+                    )
+                })?;
                 let result = xcert_lib::verify_with_untrusted(
                     &leaf_der,
                     &untrusted_data,
@@ -925,7 +922,7 @@ fn main() -> Result<()> {
                     for (i, cert_der) in certs_der.iter().enumerate() {
                         let cert_label = format!("{}[{}]", label, i);
                         let result = xcert_lib::verify_chain_with_options(
-                            &[cert_der.clone()],
+                            std::slice::from_ref(cert_der),
                             &trust_store,
                             hostname.as_deref(),
                             &options,

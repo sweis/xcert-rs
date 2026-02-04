@@ -389,13 +389,19 @@ pub fn is_certificate_chain(certs_der: &[Vec<u8>]) -> bool {
     }
 
     // Check if cert[0]'s issuer matches cert[1]'s subject
-    let cert0 = match X509Certificate::from_der(&certs_der[0]) {
-        Ok((_, cert)) => cert,
-        Err(_) => return true, // can't parse; assume chain and let verification handle errors
+    let cert0 = match certs_der
+        .first()
+        .and_then(|der| X509Certificate::from_der(der).ok())
+    {
+        Some((_, cert)) => cert,
+        None => return true, // can't parse; assume chain and let verification handle errors
     };
-    let cert1 = match X509Certificate::from_der(&certs_der[1]) {
-        Ok((_, cert)) => cert,
-        Err(_) => return true,
+    let cert1 = match certs_der
+        .get(1)
+        .and_then(|der| X509Certificate::from_der(der).ok())
+    {
+        Some((_, cert)) => cert,
+        None => return true,
     };
 
     cert0.issuer().as_raw() == cert1.subject().as_raw()
