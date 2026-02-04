@@ -1,0 +1,3 @@
+[submodule "testdata/zlint"]
+	path = testdata/zlint
+	url = https://github.com/zmap/zlint.git
