@@ -1171,8 +1171,11 @@ fn dns_name_matches_constraint(name: &str, constraint: &str) -> bool {
         // ".example.com" matches any subdomain but not the domain itself
         name.ends_with(constraint)
     } else {
-        // "example.com" matches exact or any subdomain
-        name == constraint || name.ends_with(&format!(".{}", constraint))
+        // "example.com" matches exact or any subdomain (avoid format! allocation)
+        name == constraint
+            || (name.len() > constraint.len()
+                && name.ends_with(constraint)
+                && name.as_bytes().get(name.len() - constraint.len() - 1) == Some(&b'.'))
     }
 }
 
@@ -1211,41 +1214,18 @@ fn email_matches_constraint(email: &str, constraint: &str) -> bool {
 ///
 /// IPv4 constraints are 8 bytes (4 address + 4 mask).
 /// IPv6 constraints are 32 bytes (16 address + 16 mask).
-#[allow(clippy::indexing_slicing)]
 fn ip_matches_constraint(ip_bytes: &[u8], constraint: &[u8]) -> bool {
-    if ip_bytes.len() == 4 && constraint.len() == 8 {
-        let ip: [u8; 4] = match ip_bytes.try_into() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
-        let constraint: [u8; 8] = match constraint.try_into() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
-        for i in 0..4 {
-            if (ip[i] & constraint[4 + i]) != (constraint[i] & constraint[4 + i]) {
-                return false;
-            }
-        }
-        true
-    } else if ip_bytes.len() == 16 && constraint.len() == 32 {
-        let ip: [u8; 16] = match ip_bytes.try_into() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
-        let constraint: [u8; 32] = match constraint.try_into() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
-        for i in 0..16 {
-            if (ip[i] & constraint[16 + i]) != (constraint[i] & constraint[16 + i]) {
-                return false;
-            }
-        }
-        true
-    } else {
-        false
+    let addr_len = ip_bytes.len();
+    // Constraint must be exactly 2x the address length (address + netmask)
+    if constraint.len() != addr_len * 2 || (addr_len != 4 && addr_len != 16) {
+        return false;
     }
+    let (addr, mask) = constraint.split_at(addr_len);
+    ip_bytes
+        .iter()
+        .zip(addr.iter())
+        .zip(mask.iter())
+        .all(|((ip, a), m)| (ip & m) == (a & m))
 }
 
 // ---------------------------------------------------------------------------

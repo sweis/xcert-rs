@@ -1,6 +1,6 @@
 # Known Issues
 
-Issues identified during code review. Ordered roughly by severity.
+Issues identified during code review. All issues below have been fixed.
 
 ## Security / Correctness
 
@@ -83,9 +83,38 @@ UTF-8 validation needed since base64 is ASCII.
 
 ---
 
+### ~~11. `dns_name_matches_constraint` allocates on every call~~ FIXED
+
+**Fix:** Replaced `name.ends_with(&format!(".{}", constraint))` with a
+non-allocating length + suffix + byte check.
+
+---
+
+### ~~12. `ip_matches_constraint` has duplicate IPv4/IPv6 masking loops~~ FIXED
+
+**Fix:** Consolidated into a single generic implementation using
+`split_at(addr_len)` and `Iterator::zip().all()`.
+
+---
+
+### ~~13. `check_host` collects SAN DNS entries into unnecessary Vec~~ FIXED
+
+**Fix:** Replaced `Vec<&str>` collect + `is_empty()` check + iterate with a
+single-pass loop that tracks `has_san_dns` and matches in one iteration.
+
+---
+
+### ~~14. `to_oneline` uses intermediate Vec and `replace()` chain~~ FIXED
+
+**Fix:** Replaced `collect::<Vec<_>>().join(", ")` with direct `String`
+building, and replaced the three `.replace()` calls with a single char-by-char
+escape loop.
+
+---
+
 ## Minor
 
-### ~~11. CRL reason code uses Debug formatting~~ FIXED
+### ~~15. CRL reason code uses Debug formatting~~ FIXED
 
 **Fix:** Added `format_crl_reason()` function that maps `ReasonCode` debug
 representations to RFC 5280-style camelCase strings (e.g., `keyCompromise`,
@@ -93,8 +122,15 @@ representations to RFC 5280-style camelCase strings (e.g., `keyCompromise`,
 
 ---
 
-### ~~12. No X.509 version validation~~ FIXED
+### ~~16. No X.509 version validation~~ FIXED
 
 **Fix:** `build_certificate_info()` now validates that the X.509 version
 field is 0, 1, or 2 (v1, v2, v3) and returns `XcertError::ParseError` for
 unsupported version values.
+
+---
+
+### ~~17. `check_email` and `check_ip` use verbose loops~~ FIXED
+
+**Fix:** Simplified both functions to use iterator `.any()` and `matches!()`
+instead of explicit `for` loops with early return.

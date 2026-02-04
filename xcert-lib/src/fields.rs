@@ -56,17 +56,23 @@ impl DistinguishedName {
     /// Values containing commas, equals signs, or backslashes are escaped
     /// to prevent ambiguous output.
     pub fn to_oneline(&self) -> String {
-        self.components
-            .iter()
-            .map(|(k, v)| {
-                let escaped = v
-                    .replace('\\', "\\\\")
-                    .replace(',', "\\,")
-                    .replace('=', "\\=");
-                format!("{} = {}", k, escaped)
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
+        let mut result = String::new();
+        for (i, (k, v)) in self.components.iter().enumerate() {
+            if i > 0 {
+                result.push_str(", ");
+            }
+            result.push_str(k);
+            result.push_str(" = ");
+            for ch in v.chars() {
+                match ch {
+                    '\\' => result.push_str("\\\\"),
+                    ',' => result.push_str("\\,"),
+                    '=' => result.push_str("\\="),
+                    _ => result.push(ch),
+                }
+            }
+        }
+        result
     }
 }
 
