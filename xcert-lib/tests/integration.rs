@@ -3658,28 +3658,65 @@ mod parser_fields_additional {
 // 24. x509-limbo TEST VECTORS (C2SP)
 // =========================================================================
 //
-// Curated subset of test vectors from https://github.com/C2SP/x509-limbo
-// covering rfc5280, webpki, pathlen, pathbuilding, crl, pathological, cve,
-// and invalid categories. Excludes BetterTLS name constraints (9,491 tests)
-// and online tests.
+// Test vectors from https://github.com/C2SP/x509-limbo (git submodule at
+// tests/x509-limbo/). Reads the upstream limbo.json directly and filters
+// at runtime. Tests skip gracefully if the submodule is not initialized.
+//
+// To initialize:  git submodule update --init tests/x509-limbo
+// To update:      git submodule update --remote tests/x509-limbo
 
 mod limbo {
     use serde::Deserialize;
     use std::collections::HashSet;
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
     use xcert_lib::*;
 
+    // --- Original limbo.json schema types ---
+
     #[derive(Deserialize)]
-    struct LimboSuite {
+    struct LimboFile {
         #[allow(dead_code)]
         version: u32,
-        tests: Vec<LimboTest>,
+        testcases: Vec<LimboTestcase>,
     }
 
     #[derive(Deserialize)]
-    struct LimboTest {
+    struct LimboTestcase {
         id: String,
         #[allow(dead_code)]
         description: String,
+        validation_kind: String,
+        trusted_certs: Vec<String>,
+        untrusted_intermediates: Vec<String>,
+        peer_certificate: String,
+        #[allow(dead_code)]
+        signature_algorithms: Vec<String>,
+        key_usage: Vec<String>,
+        extended_key_usage: Vec<String>,
+        expected_result: String,
+        #[allow(dead_code)]
+        expected_peer_names: Vec<serde_json::Value>,
+        expected_peer_name: Option<PeerName>,
+        validation_time: Option<String>,
+        max_chain_depth: Option<usize>,
+        #[serde(default)]
+        crls: Vec<String>,
+        #[allow(dead_code)]
+        #[serde(default)]
+        features: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct PeerName {
+        kind: String,
+        value: String,
+    }
+
+    // --- Filtered / mapped test representation ---
+
+    struct PreparedTest {
+        id: String,
         trusted_pem: String,
         chain_pem: String,
         hostname: Option<String>,
@@ -3689,19 +3726,105 @@ mod limbo {
         crls_pem: Vec<String>,
         purpose: Option<String>,
         expect_success: bool,
-        #[allow(dead_code)]
-        features: Vec<String>,
     }
 
-    fn load_limbo_suite() -> LimboSuite {
+    fn limbo_json_path() -> std::path::PathBuf {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop();
         p.push("tests");
-        p.push("limbo");
-        p.push("limbo-vectors.json");
-        let data = std::fs::read_to_string(&p)
-            .unwrap_or_else(|e| panic!("Failed to read limbo vectors: {}", e));
-        serde_json::from_str(&data).expect("Failed to parse limbo vectors JSON")
+        p.push("x509-limbo");
+        p.push("limbo.json");
+        p
+    }
+
+    fn load_and_filter() -> Option<Vec<PreparedTest>> {
+        let path = limbo_json_path();
+        let data = match std::fs::read_to_string(&path) {
+            Ok(d) => d,
+            Err(_) => return None, // submodule not initialized
+        };
+        let file: LimboFile = serde_json::from_str(&data).expect("Failed to parse limbo.json");
+
+        let eku_map: std::collections::HashMap<&str, &str> = [
+            ("serverAuth", "sslserver"),
+            ("clientAuth", "sslclient"),
+            ("codeSigning", "codesign"),
+            ("emailProtection", "smimesign"),
+            ("timeStamping", "timestampsign"),
+            ("OCSPSigning", "ocsphelper"),
+            ("anyExtendedKeyUsage", "any"),
+        ]
+        .into_iter()
+        .collect();
+
+        let tests = file
+            .testcases
+            .into_iter()
+            .filter(|tc| {
+                // Skip CLIENT validation (we only verify SERVER)
+                if tc.validation_kind != "SERVER" {
+                    return false;
+                }
+                // Skip categories we exclude
+                if tc.id.starts_with("bettertls::nameconstraints") || tc.id.starts_with("online") {
+                    return false;
+                }
+                // Skip tests with key_usage constraints (not supported)
+                if !tc.key_usage.is_empty() {
+                    return false;
+                }
+                true
+            })
+            .map(|tc| {
+                // Build chain PEM: peer_certificate + untrusted intermediates
+                let mut chain_pem = tc.peer_certificate;
+                for intermediate in &tc.untrusted_intermediates {
+                    chain_pem.push_str(intermediate);
+                }
+
+                // Build trusted PEM bundle
+                let trusted_pem: String = tc.trusted_certs.concat();
+
+                // Parse validation_time ISO 8601 → unix timestamp
+                let at_time = tc.validation_time.as_deref().and_then(|s| {
+                    OffsetDateTime::parse(s, &Rfc3339)
+                        .ok()
+                        .map(|dt| dt.unix_timestamp())
+                });
+
+                // Extract hostname or IP from expected_peer_name
+                let mut hostname = None;
+                let mut ip = None;
+                if let Some(ref pn) = tc.expected_peer_name {
+                    match pn.kind.as_str() {
+                        "DNS" => hostname = Some(pn.value.clone()),
+                        "IP" => ip = Some(pn.value.clone()),
+                        _ => {}
+                    }
+                }
+
+                // Map EKU to purpose name
+                let purpose = tc
+                    .extended_key_usage
+                    .iter()
+                    .find_map(|eku| eku_map.get(eku.as_str()).map(|s| (*s).to_string()));
+
+                PreparedTest {
+                    id: tc.id,
+                    trusted_pem,
+                    chain_pem,
+                    hostname,
+                    ip,
+                    at_time,
+                    max_depth: tc.max_chain_depth,
+                    crls_pem: tc.crls,
+                    purpose,
+                    expect_success: tc.expected_result == "SUCCESS",
+                }
+            })
+            .collect();
+
+        Some(tests)
     }
 
     /// Known failures with documented reasons. These are tracked limitations,
@@ -3721,8 +3844,6 @@ mod limbo {
     fn known_failures() -> HashSet<&'static str> {
         [
             // PATH_BUILDING: We don't build paths from untrusted intermediates.
-            // These tests provide multiple candidate intermediates and expect
-            // the verifier to find the correct path.
             "bettertls::pathbuilding::tc1",
             "bettertls::pathbuilding::tc2",
             "bettertls::pathbuilding::tc5",
@@ -3872,7 +3993,7 @@ mod limbo {
         .collect()
     }
 
-    fn run_limbo_test(tc: &LimboTest) -> (bool, String) {
+    fn run_limbo_test(tc: &PreparedTest) -> (bool, String) {
         // Build trust store
         let mut trust_store = TrustStore::default();
         if !tc.trusted_pem.is_empty() {
@@ -3953,7 +4074,7 @@ mod limbo {
 
     /// Run a category of limbo tests. Panics on unexpected failures
     /// (regressions) but tolerates known failures.
-    fn run_category(tests: &[&LimboTest], known: &HashSet<&str>, label: &str) {
+    fn run_category(tests: &[&PreparedTest], known: &HashSet<&str>, label: &str) {
         assert!(!tests.is_empty(), "No {} tests found", label);
 
         let mut passed = 0;
@@ -3976,13 +4097,16 @@ mod limbo {
                 regressions.push(format!(
                     "  {} (expected {}): {}",
                     tc.id,
-                    if tc.expect_success { "SUCCESS" } else { "FAILURE" },
+                    if tc.expect_success {
+                        "SUCCESS"
+                    } else {
+                        "FAILURE"
+                    },
                     context
                 ));
             }
         }
 
-        // Report known failures that now pass (improvements).
         if !known_now_passing.is_empty() {
             eprintln!(
                 "limbo {}: {} known failures now passing (consider removing from known_failures):",
@@ -4002,8 +4126,6 @@ mod limbo {
             known_failed
         );
 
-        // Fail only on regressions (tests that should pass but don't,
-        // and are NOT in the known-failures list).
         if !regressions.is_empty() {
             panic!(
                 "limbo {}: {} unexpected failures (regressions):\n{}",
@@ -4014,28 +4136,49 @@ mod limbo {
         }
     }
 
+    /// Load tests or skip if submodule is not initialized.
+    macro_rules! limbo_tests_or_skip {
+        () => {
+            match load_and_filter() {
+                Some(tests) => tests,
+                None => {
+                    eprintln!(
+                        "skipping limbo tests: submodule not initialized \
+                         (run: git submodule update --init tests/x509-limbo)"
+                    );
+                    return;
+                }
+            }
+        };
+    }
+
     #[test]
     fn limbo_rfc5280_vectors() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
-        let tests: Vec<_> = suite.tests.iter().filter(|t| t.id.starts_with("rfc5280::")).collect();
+        let tests: Vec<_> = suite
+            .iter()
+            .filter(|t| t.id.starts_with("rfc5280::"))
+            .collect();
         run_category(&tests, &known, "rfc5280");
     }
 
     #[test]
     fn limbo_webpki_vectors() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
-        let tests: Vec<_> = suite.tests.iter().filter(|t| t.id.starts_with("webpki::")).collect();
+        let tests: Vec<_> = suite
+            .iter()
+            .filter(|t| t.id.starts_with("webpki::"))
+            .collect();
         run_category(&tests, &known, "webpki");
     }
 
     #[test]
     fn limbo_pathlen_vectors() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
         let tests: Vec<_> = suite
-            .tests
             .iter()
             .filter(|t| t.id.starts_with("pathlen::"))
             .collect();
@@ -4044,10 +4187,9 @@ mod limbo {
 
     #[test]
     fn limbo_pathbuilding_vectors() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
         let tests: Vec<_> = suite
-            .tests
             .iter()
             .filter(|t| t.id.starts_with("bettertls::pathbuilding::"))
             .collect();
@@ -4056,18 +4198,17 @@ mod limbo {
 
     #[test]
     fn limbo_crl_vectors() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
-        let tests: Vec<_> = suite.tests.iter().filter(|t| t.id.starts_with("crl::")).collect();
+        let tests: Vec<_> = suite.iter().filter(|t| t.id.starts_with("crl::")).collect();
         run_category(&tests, &known, "crl");
     }
 
     #[test]
     fn limbo_pathological_and_edge_cases() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
         let tests: Vec<_> = suite
-            .tests
             .iter()
             .filter(|t| {
                 t.id.starts_with("pathological::")
@@ -4082,9 +4223,9 @@ mod limbo {
     /// there are unexpected regressions (tests not in known_failures).
     #[test]
     fn limbo_all_vectors_summary() {
-        let suite = load_limbo_suite();
+        let suite = limbo_tests_or_skip!();
         let known = known_failures();
-        let tests: Vec<_> = suite.tests.iter().collect();
+        let tests: Vec<_> = suite.iter().collect();
         run_category(&tests, &known, "ALL");
     }
 }
