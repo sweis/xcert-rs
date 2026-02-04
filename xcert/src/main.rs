@@ -143,8 +143,11 @@ fn read_input(file: Option<&PathBuf>) -> Result<Vec<u8>> {
             std::fs::read(path).with_context(|| format!("Failed to read file: {}", path.display()))
         }
         None => {
+            // Limit stdin reads to 10 MiB to prevent unbounded memory growth
+            const MAX_STDIN_BYTES: u64 = 10 * 1024 * 1024;
             let mut buf = Vec::new();
             std::io::stdin()
+                .take(MAX_STDIN_BYTES)
                 .read_to_end(&mut buf)
                 .context("Failed to read from stdin")?;
             Ok(buf)
@@ -228,10 +231,7 @@ fn main() -> Result<()> {
                     }
                 }
                 FieldName::OcspUrl => cert.ocsp_urls().join("\n"),
-                FieldName::KeyUsage => cert
-                    .key_usage()
-                    .map(|u| u.join(", "))
-                    .unwrap_or_default(),
+                FieldName::KeyUsage => cert.key_usage().map(|u| u.join(", ")).unwrap_or_default(),
                 FieldName::ExtKeyUsage => cert
                     .ext_key_usage()
                     .map(|u| u.join(", "))
@@ -358,8 +358,12 @@ fn main() -> Result<()> {
             let result = if let Some(untrusted_path) = untrusted {
                 // Separate leaf + untrusted intermediates (like openssl verify -untrusted)
                 let leaf_der = xcert_lib::pem_to_der(&input)?;
-                let untrusted_data = std::fs::read(untrusted_path)
-                    .with_context(|| format!("Failed to read untrusted file: {}", untrusted_path.display()))?;
+                let untrusted_data = std::fs::read(untrusted_path).with_context(|| {
+                    format!(
+                        "Failed to read untrusted file: {}",
+                        untrusted_path.display()
+                    )
+                })?;
                 xcert_lib::verify_with_untrusted(
                     &leaf_der,
                     &untrusted_data,
@@ -384,12 +388,10 @@ fn main() -> Result<()> {
                 } else {
                     println!("stdin: {}", result);
                 }
+            } else if let Some(f) = file {
+                eprintln!("{}: {}", f.display(), result);
             } else {
-                if let Some(f) = file {
-                    eprintln!("{}: {}", f.display(), result);
-                } else {
-                    eprintln!("stdin: {}", result);
-                }
+                eprintln!("stdin: {}", result);
             }
 
             if !result.is_valid {
