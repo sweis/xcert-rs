@@ -2,10 +2,64 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use rayon::prelude::*;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Color scheme for CLI output (consistent with xcert-lib display).
+///
+/// - Dates: cyan
+/// - Hex values (serial, fingerprint): magenta
+/// - URLs: blue
+/// - Strings (names, algorithms): green
+/// - Labels/keys: bold
+/// - OK/PASS: green
+/// - FAIL: red
+mod colors {
+    use colored::{ColoredString, Colorize};
+
+    /// Format a date value.
+    pub fn date(s: &str) -> ColoredString {
+        s.cyan()
+    }
+
+    /// Format a hex value (serial numbers, fingerprints).
+    pub fn hex(s: &str) -> ColoredString {
+        s.magenta()
+    }
+
+    /// Format a URL.
+    pub fn url(s: &str) -> ColoredString {
+        s.blue()
+    }
+
+    /// Format a string value (names, algorithms, etc.).
+    pub fn string(s: &str) -> ColoredString {
+        s.green()
+    }
+
+    /// Format a label/key.
+    pub fn label(s: &str) -> ColoredString {
+        s.bold()
+    }
+
+    /// Format an OK/PASS result.
+    pub fn ok(s: &str) -> ColoredString {
+        s.green()
+    }
+
+    /// Format a FAIL result.
+    pub fn fail(s: &str) -> ColoredString {
+        s.red()
+    }
+
+    /// Format a number.
+    pub fn number<T: std::fmt::Display>(n: T) -> ColoredString {
+        n.to_string().cyan()
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -368,7 +422,7 @@ struct BatchResult {
     detail: String,
 }
 
-/// Process certificate files in parallel, printing `filename: result`.
+/// Process certificate files in parallel, printing `filename: result` with colors.
 ///
 /// The closure may return multiple results per file (e.g. for CA bundles
 /// containing many independent certificates).
@@ -390,16 +444,43 @@ where
                 continue;
             }
             if r.pass {
-                println!("{}: {}", r.path, r.detail);
+                println!("{}: {}", colors::label(&r.path), r.detail);
             } else {
-                eprintln!("{}: {}", r.path, r.detail);
+                eprintln!("{}: {}", colors::label(&r.path), r.detail);
             }
         }
     }
     failures
 }
 
-/// Convert a verification result (or error) into a BatchResult.
+/// Format a verification result with colors.
+///
+/// Format: [OK/FAIL], [short_name], [serial], [optional reason]
+fn format_verify_result_colored(r: &xcert_lib::VerificationResult) -> String {
+    let mut parts = Vec::new();
+
+    // Status (OK or FAIL)
+    if r.is_valid {
+        parts.push(colors::ok("OK").to_string());
+    } else {
+        parts.push(colors::fail("FAIL").to_string());
+    }
+
+    // Short name and serial from leaf cert
+    if let Some(leaf) = r.chain.first() {
+        parts.push(colors::string(&leaf.short_name).to_string());
+        parts.push(colors::hex(&leaf.serial).to_string());
+    }
+
+    // Error reasons for failures
+    if !r.is_valid && !r.errors.is_empty() {
+        parts.push(r.errors.join("; "));
+    }
+
+    parts.join(", ")
+}
+
+/// Convert a verification result (or error) into a BatchResult with colored output.
 fn verify_to_batch(
     label: String,
     result: Result<xcert_lib::VerificationResult, impl std::fmt::Display>,
@@ -408,19 +489,19 @@ fn verify_to_batch(
         Ok(r) => BatchResult {
             path: label,
             pass: r.is_valid,
-            detail: format!("{}", r),
+            detail: format_verify_result_colored(&r),
         },
         Err(e) => BatchResult {
             path: label,
             pass: false,
-            detail: format!("FAIL ({})", e),
+            detail: format!("{} ({})", colors::fail("FAIL"), e),
         },
     }
 }
 
 /// Print a single-file verification result (JSON, text valid, or text invalid).
 ///
-/// Output format: `[filename]: [short identifier], [serial], [OK / FAIL], [optional reason]`
+/// Output format: `[filename]: [OK/FAIL], [short_name], [serial], [optional reason]`
 fn print_verify_result(
     label: &str,
     result: &xcert_lib::VerificationResult,
@@ -430,17 +511,30 @@ fn print_verify_result(
     if json {
         println!("{}", serde_json::to_string_pretty(result)?);
     } else if result.is_valid {
-        println!("{}: {}", label, result);
+        println!(
+            "{}: {}",
+            colors::label(label),
+            format_verify_result_colored(result)
+        );
         if show_chain {
             for info in &result.chain {
                 println!(
-                    "depth {}: subject = {}, issuer = {}",
-                    info.depth, info.subject, info.issuer
+                    "{} {}: {} = {}, {} = {}",
+                    colors::label("depth"),
+                    colors::number(info.depth),
+                    colors::label("subject"),
+                    colors::string(&info.subject),
+                    colors::label("issuer"),
+                    colors::string(&info.issuer)
                 );
             }
         }
     } else {
-        eprintln!("{}: {}", label, result);
+        eprintln!(
+            "{}: {}",
+            colors::label(label),
+            format_verify_result_colored(result)
+        );
     }
     Ok(())
 }
@@ -500,8 +594,12 @@ fn run() -> Result<()> {
                     for e in matching {
                         println!(
                             "{}{}: {:?}",
-                            e.name,
-                            if e.critical { " [critical]" } else { "" },
+                            colors::label(&e.name),
+                            if e.critical {
+                                format!(" {}", "[critical]".red())
+                            } else {
+                                String::new()
+                            },
                             e.value
                         );
                     }
@@ -510,11 +608,11 @@ fn run() -> Result<()> {
             }
 
             let output = match field {
-                FieldName::Subject => cert.subject_string(),
-                FieldName::Issuer => cert.issuer_string(),
-                FieldName::Serial => cert.serial_hex().to_string(),
-                FieldName::NotBefore => cert.not_before_string(),
-                FieldName::NotAfter => cert.not_after_string(),
+                FieldName::Subject => colors::string(&cert.subject_string()).to_string(),
+                FieldName::Issuer => colors::string(&cert.issuer_string()).to_string(),
+                FieldName::Serial => colors::hex(cert.serial_hex()).to_string(),
+                FieldName::NotBefore => colors::date(&cert.not_before_string()).to_string(),
+                FieldName::NotAfter => colors::date(&cert.not_after_string()).to_string(),
                 FieldName::Fingerprint => {
                     let alg = match digest.as_str() {
                         "sha256" => xcert_lib::DigestAlgorithm::Sha256,
@@ -526,35 +624,62 @@ fn run() -> Result<()> {
                             digest
                         ),
                     };
-                    cert.fingerprint(alg)
+                    colors::hex(&cert.fingerprint(alg)).to_string()
                 }
                 FieldName::PublicKey => cert.public_key_pem().to_string(),
-                FieldName::Modulus => cert
-                    .modulus_hex()
-                    .unwrap_or("(not an RSA certificate)")
-                    .to_string(),
+                FieldName::Modulus => {
+                    let val = cert.modulus_hex().unwrap_or("(not an RSA certificate)");
+                    if val.starts_with('(') {
+                        val.to_string()
+                    } else {
+                        colors::hex(val).to_string()
+                    }
+                }
                 FieldName::Exponent => cert
                     .public_key
                     .exponent
-                    .map(|e| e.to_string())
+                    .map(|e| colors::number(e).to_string())
                     .unwrap_or_else(|| "(not an RSA certificate)".to_string()),
-                FieldName::Emails => cert.emails().join("\n"),
+                FieldName::Emails => cert
+                    .emails()
+                    .iter()
+                    .map(|e| colors::string(e).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 FieldName::San => {
                     if *json {
                         serde_json::to_string_pretty(&cert.san_entries())?
                     } else {
                         cert.san_entries()
                             .iter()
-                            .map(|e| e.to_string())
+                            .map(|e| colors::string(&e.to_string()).to_string())
                             .collect::<Vec<_>>()
                             .join(", ")
                     }
                 }
-                FieldName::OcspUrl => cert.ocsp_urls().join("\n"),
-                FieldName::KeyUsage => cert.key_usage().map(|u| u.join(", ")).unwrap_or_default(),
+                FieldName::OcspUrl => cert
+                    .ocsp_urls()
+                    .iter()
+                    .map(|u| colors::url(u).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                FieldName::KeyUsage => cert
+                    .key_usage()
+                    .map(|u| {
+                        u.iter()
+                            .map(|s| colors::string(s).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default(),
                 FieldName::ExtKeyUsage => cert
                     .ext_key_usage()
-                    .map(|u| u.join(", "))
+                    .map(|u| {
+                        u.iter()
+                            .map(|s| colors::string(s).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
                     .unwrap_or_default(),
                 FieldName::Extensions => {
                     if *json {
@@ -565,8 +690,12 @@ fn run() -> Result<()> {
                             .map(|e| {
                                 format!(
                                     "{}{}: {:?}",
-                                    e.name,
-                                    if e.critical { " [critical]" } else { "" },
+                                    colors::label(&e.name),
+                                    if e.critical {
+                                        format!(" {}", "[critical]".red())
+                                    } else {
+                                        String::new()
+                                    },
                                     e.value
                                 )
                             })
@@ -614,7 +743,7 @@ fn run() -> Result<()> {
                                 return vec![BatchResult {
                                     path: label,
                                     pass: false,
-                                    detail: format!("FAIL (read error: {})", e),
+                                    detail: format!("{} (read error: {})", colors::fail("FAIL"), e),
                                 }]
                             }
                         };
@@ -624,7 +753,11 @@ fn run() -> Result<()> {
                                 return vec![BatchResult {
                                     path: label,
                                     pass: false,
-                                    detail: format!("FAIL (parse error: {})", e),
+                                    detail: format!(
+                                        "{} (parse error: {})",
+                                        colors::fail("FAIL"),
+                                        e
+                                    ),
                                 }]
                             }
                         };
@@ -640,9 +773,9 @@ fn run() -> Result<()> {
                             path: label,
                             pass,
                             detail: if pass {
-                                "PASS".to_string()
+                                colors::ok("PASS").to_string()
                             } else {
-                                "FAIL".to_string()
+                                colors::fail("FAIL").to_string()
                             },
                         }]
                     });

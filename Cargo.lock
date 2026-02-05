@@ -829,6 +829,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "colored",
  "humantime",
  "rayon",
  "serde_json",

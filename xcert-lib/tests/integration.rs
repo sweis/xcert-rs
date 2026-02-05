@@ -3225,10 +3225,10 @@ mod verify_options {
         let result = verify_chain(&chain, &store, None).expect("verification should not error");
         assert!(result.is_valid);
         let display = format!("{}", result);
-        // New format: [short_name], [serial], OK
+        // Format: OK, [short_name], [serial]
         assert!(
-            display.contains(", OK"),
-            "display should contain OK: {}",
+            display.starts_with("OK"),
+            "display should start with OK: {}",
             display
         );
         // Check that short_name and serial are present
@@ -3249,10 +3249,10 @@ mod verify_options {
         let result = verify_chain(&chain, &store, None).expect("verification should not error");
         assert!(!result.is_valid);
         let display = format!("{}", result);
-        // New format: [short_name], [serial], FAIL, [reason]
+        // Format: FAIL, [short_name], [serial], [reason]
         assert!(
-            display.contains(", FAIL"),
-            "display should contain FAIL: {}",
+            display.starts_with("FAIL"),
+            "display should start with FAIL: {}",
             display
         );
     }
