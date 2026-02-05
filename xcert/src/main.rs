@@ -925,8 +925,20 @@ fn run() -> Result<()> {
             }
 
             let output = match field {
-                FieldName::Subject => colors::string(&cert.subject_string()).to_string(),
-                FieldName::Issuer => colors::string(&cert.issuer_string()).to_string(),
+                FieldName::Subject => {
+                    if *json {
+                        serde_json::to_string_pretty(&cert.subject)?
+                    } else {
+                        colors::string(&cert.subject_string()).to_string()
+                    }
+                }
+                FieldName::Issuer => {
+                    if *json {
+                        serde_json::to_string_pretty(&cert.issuer)?
+                    } else {
+                        colors::string(&cert.issuer_string()).to_string()
+                    }
+                }
                 FieldName::Serial => colors::hex(cert.serial_hex()).to_string(),
                 FieldName::NotBefore => colors::date(&cert.not_before_string()).to_string(),
                 FieldName::NotAfter => colors::date(&cert.not_after_string()).to_string(),
