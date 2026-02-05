@@ -15,7 +15,7 @@ pub fn der_to_pem(der: &[u8]) -> String {
 pub fn pem_to_der(pem: &[u8]) -> Result<Vec<u8>, XcertError> {
     // Skip any leading comments or metadata before the PEM block.
     let pem_input = match util::find_pem_start(pem) {
-        Some(offset) => &pem[offset..],
+        Some(offset) => pem.get(offset..).unwrap_or(pem),
         None => pem,
     };
 

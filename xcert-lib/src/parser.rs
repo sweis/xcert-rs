@@ -31,7 +31,7 @@ pub fn parse_pem(input: &[u8]) -> Result<CertificateInfo, XcertError> {
     // Files like /etc/ssl/cert.pem may have comment lines before the
     // first -----BEGIN CERTIFICATE----- marker.
     let pem_input = match util::find_pem_start(input) {
-        Some(offset) => &input[offset..],
+        Some(offset) => input.get(offset..).unwrap_or(input),
         None => input,
     };
 
