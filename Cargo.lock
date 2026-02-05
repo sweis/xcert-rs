@@ -832,6 +832,7 @@ dependencies = [
  "colored",
  "humantime",
  "rayon",
+ "serde",
  "serde_json",
  "walkdir",
  "xcert-lib",
