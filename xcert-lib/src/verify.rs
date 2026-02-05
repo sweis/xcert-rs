@@ -7,6 +7,7 @@
 //! The system trust store location is discovered via `openssl-probe` and
 //! environment variables, matching OpenSSL's lookup behavior.
 
+use crate::oid;
 use crate::util;
 use crate::XcertError;
 use serde::Serialize;
@@ -159,13 +160,13 @@ impl Default for VerifyOptions {
 /// Matches OpenSSL's `-purpose` named values.
 pub fn resolve_purpose(name: &str) -> Option<&'static str> {
     match name {
-        "sslserver" => Some("1.3.6.1.5.5.7.3.1"),
-        "sslclient" => Some("1.3.6.1.5.5.7.3.2"),
-        "smimesign" | "smimeencrypt" => Some("1.3.6.1.5.5.7.3.4"),
-        "codesign" => Some("1.3.6.1.5.5.7.3.3"),
-        "timestampsign" => Some("1.3.6.1.5.5.7.3.8"),
-        "ocsphelper" => Some("1.3.6.1.5.5.7.3.9"),
-        "any" => Some("2.5.29.37.0"),
+        "sslserver" => Some(oid::EKU_SERVER_AUTH),
+        "sslclient" => Some(oid::EKU_CLIENT_AUTH),
+        "smimesign" | "smimeencrypt" => Some(oid::EKU_EMAIL_PROTECTION),
+        "codesign" => Some(oid::EKU_CODE_SIGNING),
+        "timestampsign" => Some(oid::EKU_TIME_STAMPING),
+        "ocsphelper" => Some(oid::EKU_OCSP_SIGNING),
+        "any" => Some(oid::EKU_ANY),
         _ => None,
     }
 }
@@ -227,16 +228,19 @@ impl TrustStore {
 
         // Try directory of individual certs
         let probe = openssl_probe::probe();
-        let mut dir_paths: Vec<Option<String>> = vec![std::env::var("SSL_CERT_DIR").ok()];
-        for probe_dir in probe.cert_dir {
-            dir_paths.push(Some(probe_dir.to_string_lossy().into_owned()));
-        }
-        for known in KNOWN_CA_DIR_PATHS {
-            dir_paths.push(Some((*known).into()));
-        }
+        let dir_candidates = std::env::var("SSL_CERT_DIR")
+            .ok()
+            .into_iter()
+            .chain(
+                probe
+                    .cert_dir
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            )
+            .chain(KNOWN_CA_DIR_PATHS.iter().map(|s| (*s).to_string()));
 
-        for dir in dir_paths.iter().flatten() {
-            let dir_path = std::path::Path::new(dir);
+        for dir in dir_candidates {
+            let dir_path = std::path::Path::new(&dir);
             if let Ok(added) = store.add_pem_directory(dir_path) {
                 if added > 0 {
                     return Ok(store);
@@ -536,7 +540,7 @@ pub fn verify_chain_with_options(
     check_chain_critical_extensions(&parsed, &subjects, &mut errors);
     check_chain_duplicate_extensions(&parsed, &subjects, &mut errors);
     check_chain_name_constraint_placement(&parsed, &subjects, &mut errors);
-    check_chain_name_constraints(&parsed, &mut errors);
+    check_chain_name_constraints(&parsed, &subjects, &mut errors);
     check_chain_key_cert_sign(&parsed, &subjects, &mut errors);
     check_chain_rfc5280_strict(&parsed, &subjects, &mut errors);
     check_chain_signatures(&parsed, &subjects, &mut errors);
@@ -545,6 +549,7 @@ pub fn verify_chain_with_options(
     let trusted_root_der = verify_trust_anchoring(
         &parsed,
         &subjects,
+        &issuers,
         trust_store,
         options,
         &mut chain_info,
@@ -553,7 +558,7 @@ pub fn verify_chain_with_options(
 
     // Trusted root validation
     if let Some(ref root_der) = trusted_root_der {
-        check_trusted_root(root_der, &parsed, options, now_ts, &mut errors);
+        check_trusted_root(root_der, &parsed, &subjects, options, now_ts, &mut errors);
     }
 
     // Leaf certificate checks
@@ -716,7 +721,7 @@ fn check_chain_name_constraint_placement(
     for (i, (_, x509)) in parsed.iter().enumerate() {
         let is_leaf = i == 0;
         for ext in x509.extensions() {
-            if ext.oid.to_id_string() == "2.5.29.30" {
+            if ext.oid.to_id_string() == oid::EXT_NAME_CONSTRAINTS {
                 if is_leaf {
                     errors.push(format!(
                         "certificate at depth {} ({}) is an end-entity but contains \
@@ -736,7 +741,12 @@ fn check_chain_name_constraint_placement(
 }
 
 /// RFC 5280 Section 4.2.1.10: Check Name Constraints for CA certificates.
-fn check_chain_name_constraints(parsed: &[(&[u8], X509Certificate)], errors: &mut Vec<String>) {
+#[allow(clippy::indexing_slicing)] // subjects has same length as parsed
+fn check_chain_name_constraints(
+    parsed: &[(&[u8], X509Certificate)],
+    subjects: &[String],
+    errors: &mut Vec<String>,
+) {
     for (ca_depth, (_, ca_cert)) in parsed.iter().enumerate().skip(1) {
         if let Ok(Some(nc_ext)) = ca_cert.name_constraints() {
             let nc = &nc_ext.value;
@@ -749,7 +759,13 @@ fn check_chain_name_constraints(parsed: &[(&[u8], X509Certificate)], errors: &mu
                 if child_depth > 0 && is_self_issued(child_cert) {
                     continue;
                 }
-                let nc_errors = check_name_constraints(nc, child_cert, child_depth, ca_depth);
+                let nc_errors = check_name_constraints(
+                    nc,
+                    child_cert,
+                    &subjects[child_depth],
+                    child_depth,
+                    ca_depth,
+                );
                 errors.extend(nc_errors);
             }
         }
@@ -939,10 +955,11 @@ fn check_chain_signatures(
 /// Verify trust anchoring: find the root in the trust store.
 ///
 /// Returns `Some(root_der)` if a trusted root was found, `None` otherwise.
-#[allow(clippy::indexing_slicing)] // subjects has same length as parsed
+#[allow(clippy::indexing_slicing)] // subjects/issuers have same length as parsed
 fn verify_trust_anchoring(
     parsed: &[(&[u8], X509Certificate)],
     subjects: &[String],
+    issuers: &[String],
     trust_store: &TrustStore,
     options: &VerifyOptions,
     chain_info: &mut Vec<ChainCertInfo>,
@@ -1001,10 +1018,9 @@ fn verify_trust_anchoring(
             }
 
             if !trust_anchored {
-                let last_issuer = crate::parser::build_dn(last_x509.issuer()).to_oneline();
                 errors.push(format!(
                     "unable to find trusted root for issuer: {}",
-                    last_issuer
+                    issuers[last_idx]
                 ));
             }
         }
@@ -1014,9 +1030,11 @@ fn verify_trust_anchoring(
 }
 
 /// Validate the trusted root: time, critical extensions, Name Constraints.
+#[allow(clippy::indexing_slicing)] // subjects has same length as parsed
 fn check_trusted_root(
     root_der: &[u8],
     parsed: &[(&[u8], X509Certificate)],
+    subjects: &[String],
     options: &VerifyOptions,
     now_ts: i64,
     errors: &mut Vec<String>,
@@ -1039,7 +1057,8 @@ fn check_trusted_root(
     }
 
     for ext in root_x509.extensions() {
-        if ext.critical && !is_known_extension(ext.oid.to_id_string().as_str()) {
+        let oid_str = ext.oid.to_id_string();
+        if ext.critical && !is_known_extension(oid_str.as_str()) {
             errors.push(format!(
                 "trusted root ({}) has unrecognized critical extension {}",
                 root_subject, ext.oid
@@ -1116,7 +1135,7 @@ fn check_trusted_root(
 
     // Name Constraints from trusted root.
     for ext in root_x509.extensions() {
-        if ext.oid.to_id_string() == "2.5.29.30" && !ext.critical {
+        if ext.oid.to_id_string() == oid::EXT_NAME_CONSTRAINTS && !ext.critical {
             errors.push(format!(
                 "trusted root ({}) has Name Constraints extension \
                  that is not marked critical",
@@ -1131,7 +1150,13 @@ fn check_trusted_root(
             if child_depth > 0 && is_self_issued(child_cert) {
                 continue;
             }
-            let nc_errors = check_name_constraints(nc, child_cert, child_depth, root_depth);
+            let nc_errors = check_name_constraints(
+                nc,
+                child_cert,
+                &subjects[child_depth],
+                child_depth,
+                root_depth,
+            );
             errors.extend(nc_errors);
         }
     }
@@ -1155,13 +1180,13 @@ fn check_leaf_purpose(
         let eku_val = &eku.value;
         let has_eku = eku_val.any
             || match required_oid.as_str() {
-                "1.3.6.1.5.5.7.3.1" => eku_val.server_auth,
-                "1.3.6.1.5.5.7.3.2" => eku_val.client_auth,
-                "1.3.6.1.5.5.7.3.3" => eku_val.code_signing,
-                "1.3.6.1.5.5.7.3.4" => eku_val.email_protection,
-                "1.3.6.1.5.5.7.3.8" => eku_val.time_stamping,
-                "1.3.6.1.5.5.7.3.9" => eku_val.ocsp_signing,
-                "2.5.29.37.0" => true,
+                oid::EKU_SERVER_AUTH => eku_val.server_auth,
+                oid::EKU_CLIENT_AUTH => eku_val.client_auth,
+                oid::EKU_CODE_SIGNING => eku_val.code_signing,
+                oid::EKU_EMAIL_PROTECTION => eku_val.email_protection,
+                oid::EKU_TIME_STAMPING => eku_val.time_stamping,
+                oid::EKU_OCSP_SIGNING => eku_val.ocsp_signing,
+                oid::EKU_ANY => true,
                 _ => eku_val
                     .other
                     .iter()
@@ -1546,7 +1571,7 @@ fn extract_san_dns_names(cert: &X509Certificate) -> Vec<String> {
 fn extract_cn(cert: &X509Certificate) -> Option<String> {
     for rdn in cert.subject().iter() {
         for attr in rdn.iter() {
-            if attr.attr_type().to_id_string() == "2.5.4.3" {
+            if attr.attr_type().to_id_string() == oid::COMMON_NAME {
                 return attr.as_str().ok().map(|s| s.to_string());
             }
         }
@@ -1575,7 +1600,7 @@ fn extract_emails(cert: &X509Certificate) -> Vec<String> {
     }
     for rdn in cert.subject().iter() {
         for attr in rdn.iter() {
-            if attr.attr_type().to_id_string() == "1.2.840.113549.1.9.1" {
+            if attr.attr_type().to_id_string() == oid::EMAIL_ADDRESS {
                 if let Ok(val) = attr.as_str() {
                     emails.push(val.to_string());
                 }
@@ -1617,28 +1642,28 @@ fn is_known_extension(oid: &str) -> bool {
     matches!(
         oid,
         // RFC 5280 standard extensions
-        "2.5.29.14" // Subject Key Identifier
-        | "2.5.29.15" // Key Usage
-        | "2.5.29.17" // Subject Alternative Name
-        | "2.5.29.18" // Issuer Alternative Name
-        | "2.5.29.19" // Basic Constraints
-        | "2.5.29.30" // Name Constraints
-        | "2.5.29.31" // CRL Distribution Points
-        | "2.5.29.32" // Certificate Policies
-        | "2.5.29.33" // Policy Mappings
-        | "2.5.29.35" // Authority Key Identifier
-        | "2.5.29.36" // Policy Constraints
-        | "2.5.29.37" // Extended Key Usage
-        | "2.5.29.46" // Freshest CRL
-        | "2.5.29.54" // Inhibit Any Policy
+        oid::EXT_SUBJECT_KEY_ID
+        | oid::EXT_KEY_USAGE
+        | oid::EXT_SUBJECT_ALT_NAME
+        | oid::EXT_ISSUER_ALT_NAME
+        | oid::EXT_BASIC_CONSTRAINTS
+        | oid::EXT_NAME_CONSTRAINTS
+        | oid::EXT_CRL_DISTRIBUTION_POINTS
+        | oid::EXT_CERTIFICATE_POLICIES
+        | oid::EXT_POLICY_MAPPINGS
+        | oid::EXT_AUTHORITY_KEY_ID
+        | oid::EXT_POLICY_CONSTRAINTS
+        | oid::EXT_EXTENDED_KEY_USAGE
+        | oid::EXT_FRESHEST_CRL
+        | oid::EXT_INHIBIT_ANY_POLICY
         // Common extensions in practice
-        | "1.3.6.1.5.5.7.1.1"  // Authority Info Access (AIA)
-        | "1.3.6.1.5.5.7.1.11" // Subject Info Access (SIA)
-        | "1.3.6.1.5.5.7.1.12" // TLS Feature (OCSP Must-Staple)
-        | "1.3.6.1.4.1.11129.2.4.2" // SCT List (Certificate Transparency)
-        | "1.3.6.1.4.1.11129.2.4.3" // CT Poison (pre-certificate)
+        | oid::EXT_AUTHORITY_INFO_ACCESS
+        | oid::EXT_SUBJECT_INFO_ACCESS
+        | oid::EXT_TLS_FEATURE
+        | oid::EXT_SCT_LIST
+        | oid::EXT_CT_POISON
         // Netscape extensions (legacy, but still seen)
-        | "2.16.840.1.113730.1.1" // Netscape Cert Type
+        | oid::EXT_NETSCAPE_CERT_TYPE
     )
 }
 
@@ -1652,11 +1677,11 @@ fn is_known_extension(oid: &str) -> bool {
 fn check_name_constraints(
     nc: &x509_parser::extensions::NameConstraints,
     cert: &X509Certificate,
+    subject: &str,
     child_depth: usize,
     ca_depth: usize,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let subject = crate::parser::build_dn(cert.subject()).to_oneline();
 
     // Collect all names from the certificate's SAN extension
     let mut dns_names: Vec<String> = Vec::new();
@@ -1683,7 +1708,7 @@ fn check_name_constraints(
     // Also check subject emailAddress (OID 1.2.840.113549.1.9.1)
     for rdn in cert.subject().iter() {
         for attr in rdn.iter() {
-            if attr.attr_type().to_id_string() == "1.2.840.113549.1.9.1" {
+            if attr.attr_type().to_id_string() == oid::EMAIL_ADDRESS {
                 if let Ok(val) = attr.as_str() {
                     email_names.push(val.to_ascii_lowercase());
                 }
@@ -1943,7 +1968,7 @@ pub fn parse_pem_crl(input: &[u8]) -> Result<Vec<Vec<u8>>, XcertError> {
 ///
 /// Matches on the underlying numeric value of the `ReasonCode` newtype
 /// (which wraps a `u8`), per RFC 5280 Section 5.3.1.
-fn format_crl_reason(rc: &x509_parser::x509::ReasonCode) -> String {
+fn format_crl_reason(rc: &x509_parser::x509::ReasonCode) -> &'static str {
     match rc.0 {
         0 => "unspecified",
         1 => "keyCompromise",
@@ -1958,7 +1983,6 @@ fn format_crl_reason(rc: &x509_parser::x509::ReasonCode) -> String {
         10 => "aACompromise",
         _ => "unspecified",
     }
-    .into()
 }
 
 /// Check whether a certificate has been revoked according to the given CRLs.
@@ -2013,8 +2037,8 @@ pub fn check_crl_revocation(
                 let reason = revoked
                     .reason_code()
                     .map(|rc| format_crl_reason(&rc.1))
-                    .unwrap_or_else(|| "unspecified".to_string());
-                return Some(reason);
+                    .unwrap_or("unspecified");
+                return Some(reason.to_string());
             }
         }
     }
