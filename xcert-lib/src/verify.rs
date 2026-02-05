@@ -19,6 +19,10 @@ use x509_parser::prelude::*;
 /// Maximum chain depth to prevent infinite loops during chain building.
 const MAX_CHAIN_DEPTH: usize = 32;
 
+/// Maximum work factor for Name Constraints checking (names × subtrees).
+/// Protects against DoS from certificates with thousands of SANs or subtrees.
+const MAX_NC_WORK_FACTOR: usize = 65_536;
+
 /// Well-known CA bundle file paths, in order of preference.
 const KNOWN_CA_BUNDLE_PATHS: &[&str] = &[
     "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
@@ -89,6 +93,19 @@ pub struct ChainCertInfo {
     pub issuer: String,
 }
 
+/// Verification policy that controls which validation rules are applied.
+///
+/// RFC 5280 mode enforces base X.509 rules. WebPKI mode additionally checks
+/// CABF Baseline Requirements for TLS server certificates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerifyPolicy {
+    /// Standard RFC 5280 certificate path validation.
+    #[default]
+    Rfc5280,
+    /// WebPKI / CABF Baseline Requirements mode (stricter).
+    WebPki,
+}
+
 /// Options controlling verification behavior.
 pub struct VerifyOptions {
     /// Whether to check certificate validity dates.
@@ -116,6 +133,8 @@ pub struct VerifyOptions {
     pub crl_check_leaf: bool,
     /// Check CRL for all certificates in the chain (`crl_check_all`).
     pub crl_check_all: bool,
+    /// Verification policy (RFC 5280 or WebPKI). Default: RFC 5280.
+    pub policy: VerifyPolicy,
 }
 
 impl Default for VerifyOptions {
@@ -131,6 +150,7 @@ impl Default for VerifyOptions {
             crl_ders: Vec::new(),
             crl_check_leaf: false,
             crl_check_all: false,
+            policy: VerifyPolicy::default(),
         }
     }
 }
@@ -449,13 +469,6 @@ pub fn verify_chain_with_options(
     }
 
     let max_depth = options.verify_depth.unwrap_or(MAX_CHAIN_DEPTH);
-    let num_intermediates = chain_der.len().saturating_sub(1);
-    if num_intermediates > max_depth {
-        return Err(XcertError::VerifyError(format!(
-            "certificate chain exceeds maximum depth of {} (has {} intermediates)",
-            max_depth, num_intermediates
-        )));
-    }
 
     let now_ts = options.at_time.unwrap_or_else(|| {
         SystemTime::now()
@@ -479,6 +492,22 @@ pub fn verify_chain_with_options(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // RFC 5280 Section 6.1: max_chain_depth counts non-self-issued
+    // intermediates. Self-issued certificates (subject == issuer) do not
+    // count toward the depth limit.
+    let num_intermediates = parsed
+        .iter()
+        .enumerate()
+        .skip(1) // skip leaf
+        .filter(|(_, (_, cert))| !is_self_issued(cert))
+        .count();
+    if num_intermediates > max_depth {
+        return Err(XcertError::VerifyError(format!(
+            "certificate chain exceeds maximum depth of {} (has {} non-self-issued intermediates)",
+            max_depth, num_intermediates
+        )));
+    }
 
     // Pre-compute subject and issuer strings for all certificates (#29).
     let subjects: Vec<String> = parsed
@@ -513,6 +542,7 @@ pub fn verify_chain_with_options(
     check_chain_name_constraint_placement(&parsed, &subjects, &mut errors);
     check_chain_name_constraints(&parsed, &subjects, &mut errors);
     check_chain_key_cert_sign(&parsed, &subjects, &mut errors);
+    check_chain_rfc5280_strict(&parsed, &subjects, &mut errors);
     check_chain_signatures(&parsed, &subjects, &mut errors);
 
     // Trust anchoring
@@ -537,7 +567,8 @@ pub fn verify_chain_with_options(
     check_leaf_email(&parsed, options, &mut errors);
     check_leaf_ip(&parsed, options, &mut errors);
 
-    // CRL revocation
+    // CRL strict validation + revocation checking
+    check_crl_strict(options, &mut errors);
     check_crl_chain(
         &parsed,
         &subjects,
@@ -546,6 +577,11 @@ pub fn verify_chain_with_options(
         now_ts,
         &mut errors,
     );
+
+    // WebPKI-specific validation (CABF Baseline Requirements)
+    if options.policy == VerifyPolicy::WebPki {
+        check_webpki_policy(&parsed, &subjects, &trusted_root_der, &mut errors);
+    }
 
     Ok(VerificationResult {
         is_valid: errors.is_empty(),
@@ -602,7 +638,15 @@ fn check_chain_basic_constraints(
                     ));
                 }
                 if let Some(pathlen) = constraints.path_len_constraint {
-                    let intermediates_below = i.saturating_sub(1) as u32;
+                    // RFC 5280 Section 6.1.4(h): self-issued intermediates
+                    // do not count toward pathLenConstraint.
+                    let intermediates_below = parsed
+                        .iter()
+                        .enumerate()
+                        .skip(1)
+                        .take(i.saturating_sub(1))
+                        .filter(|(_, (_, c))| !is_self_issued(c))
+                        .count() as u32;
                     if intermediates_below > pathlen {
                         errors.push(format!(
                             "certificate at depth {} ({}) path length constraint violated \
@@ -710,6 +754,11 @@ fn check_chain_name_constraints(
                 if child_depth >= ca_depth {
                     break;
                 }
+                // RFC 5280 Section 6.1.4(b): Self-issued certificates are
+                // exempt from name constraints, except for the leaf.
+                if child_depth > 0 && is_self_issued(child_cert) {
+                    continue;
+                }
                 let nc_errors = check_name_constraints(
                     nc,
                     child_cert,
@@ -738,6 +787,145 @@ fn check_chain_key_cert_sign(
                      include keyCertSign",
                     i, subjects[i]
                 ));
+            }
+        }
+    }
+}
+
+/// RFC 5280 strict validation: AKI/SKI, serial number, SAN, AIA, Policy Constraints, EKU.
+#[allow(clippy::indexing_slicing)] // subjects has same length as parsed
+fn check_chain_rfc5280_strict(
+    parsed: &[(&[u8], X509Certificate)],
+    subjects: &[String],
+    errors: &mut Vec<String>,
+) {
+    for (i, (_, x509)) in parsed.iter().enumerate() {
+        let is_leaf = i == 0;
+        let self_signed = x509.subject().as_raw() == x509.issuer().as_raw();
+
+        // RFC 5280 Section 4.2.1.1: AKI MUST be present in all certificates
+        // except self-signed root CAs. AKI MUST be non-critical.
+        let aki_ext = x509
+            .extensions()
+            .iter()
+            .find(|e| e.oid.to_id_string() == "2.5.29.35");
+        if !self_signed && aki_ext.is_none() {
+            errors.push(format!(
+                "certificate at depth {} ({}) is missing Authority Key Identifier",
+                i, subjects[i]
+            ));
+        }
+        if let Some(ext) = aki_ext {
+            if ext.critical {
+                errors.push(format!(
+                    "certificate at depth {} ({}) has Authority Key Identifier marked critical",
+                    i, subjects[i]
+                ));
+            }
+        }
+
+        // RFC 5280 Section 4.2.1.2: SKI MUST appear in all CA certificates.
+        // SKI MUST be non-critical.
+        let ski_ext = x509
+            .extensions()
+            .iter()
+            .find(|e| e.oid.to_id_string() == "2.5.29.14");
+        if !is_leaf && ski_ext.is_none() {
+            errors.push(format!(
+                "certificate at depth {} ({}) is a CA but missing Subject Key Identifier",
+                i, subjects[i]
+            ));
+        }
+        if let Some(ext) = ski_ext {
+            if ext.critical {
+                errors.push(format!(
+                    "certificate at depth {} ({}) has Subject Key Identifier marked critical",
+                    i, subjects[i]
+                ));
+            }
+        }
+
+        // RFC 5280 Section 4.1.2.2: Serial number MUST NOT exceed 20 octets,
+        // and MUST be positive (non-zero).
+        let serial = x509.raw_serial();
+        if serial.len() > 20 {
+            errors.push(format!(
+                "certificate at depth {} ({}) serial number exceeds 20 octets ({})",
+                i,
+                subjects[i],
+                serial.len()
+            ));
+        }
+        if serial.iter().all(|&b| b == 0) {
+            errors.push(format!(
+                "certificate at depth {} ({}) has zero serial number",
+                i, subjects[i]
+            ));
+        }
+
+        // RFC 5280 Section 4.2.1.6: SAN MUST be critical when subject is empty.
+        let subject_empty = x509.subject().as_raw().len() <= 2;
+        if subject_empty {
+            let san_ext = x509
+                .extensions()
+                .iter()
+                .find(|e| e.oid.to_id_string() == "2.5.29.17");
+            match san_ext {
+                Some(ext) if !ext.critical => {
+                    errors.push(format!(
+                        "certificate at depth {} ({}) has empty subject but SAN is not critical",
+                        i, subjects[i]
+                    ));
+                }
+                None if !is_leaf => {
+                    errors.push(format!(
+                        "certificate at depth {} ({}) is a CA with empty subject and no SAN",
+                        i, subjects[i]
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        // RFC 5280 Section 4.2.2.1: AIA MUST be non-critical.
+        for ext in x509.extensions() {
+            if ext.oid.to_id_string() == "1.3.6.1.5.5.7.1.1" && ext.critical {
+                errors.push(format!(
+                    "certificate at depth {} ({}) has Authority Information Access marked critical",
+                    i, subjects[i]
+                ));
+            }
+        }
+
+        // RFC 5280 Section 4.2.1.11: Policy Constraints MUST be critical.
+        for ext in x509.extensions() {
+            if ext.oid.to_id_string() == "2.5.29.36" && !ext.critical {
+                errors.push(format!(
+                    "certificate at depth {} ({}) has Policy Constraints not marked critical",
+                    i, subjects[i]
+                ));
+            }
+        }
+
+        // Leaf-specific checks
+        if is_leaf {
+            // RFC 5280: EKU extension must not be empty.
+            if let Ok(Some(eku)) = x509.extended_key_usage() {
+                let v = &eku.value;
+                let has_any = v.any
+                    || v.server_auth
+                    || v.client_auth
+                    || v.code_signing
+                    || v.email_protection
+                    || v.time_stamping
+                    || v.ocsp_signing
+                    || !v.other.is_empty();
+                if !has_any {
+                    errors.push(format!(
+                        "leaf certificate ({}) has empty Extended Key Usage extension",
+                        subjects[i]
+                    ));
+                }
             }
         }
     }
@@ -876,7 +1064,78 @@ fn check_trusted_root(
                 root_subject, ext.oid
             ));
         }
-        if oid_str == oid::EXT_NAME_CONSTRAINTS && !ext.critical {
+    }
+
+    // RFC 5280: Root CA must have BasicConstraints, and it must be critical.
+    let root_bc = root_x509.basic_constraints().ok().flatten();
+    match root_bc {
+        Some(bc_ext) => {
+            if !bc_ext.value.ca {
+                errors.push(format!(
+                    "trusted root ({}) BasicConstraints does not have CA:TRUE",
+                    root_subject
+                ));
+            }
+            let bc_critical = root_x509
+                .extensions()
+                .iter()
+                .find(|e| e.oid.to_id_string() == "2.5.29.19")
+                .is_some_and(|e| e.critical);
+            if !bc_critical {
+                errors.push(format!(
+                    "trusted root ({}) has BasicConstraints not marked critical",
+                    root_subject
+                ));
+            }
+        }
+        None => {
+            errors.push(format!(
+                "trusted root ({}) is missing BasicConstraints extension",
+                root_subject
+            ));
+        }
+    }
+
+    // RFC 5280: Root must have SKI.
+    let root_has_ski = root_x509
+        .extensions()
+        .iter()
+        .any(|e| e.oid.to_id_string() == "2.5.29.14");
+    if !root_has_ski {
+        errors.push(format!(
+            "trusted root ({}) is missing Subject Key Identifier",
+            root_subject
+        ));
+    }
+
+    // RFC 5280: Root serial number validation.
+    let root_serial = root_x509.raw_serial();
+    if root_serial.len() > 20 {
+        errors.push(format!(
+            "trusted root ({}) serial number exceeds 20 octets",
+            root_subject
+        ));
+    }
+    if root_serial.iter().all(|&b| b == 0) {
+        errors.push(format!(
+            "trusted root ({}) has zero serial number",
+            root_subject
+        ));
+    }
+
+    // RFC 5280: Root CA must have keyCertSign when KU is present.
+    if let Ok(Some(ku)) = root_x509.key_usage() {
+        if !ku.value.key_cert_sign() {
+            errors.push(format!(
+                "trusted root ({}) Key Usage does not include keyCertSign",
+                root_subject
+            ));
+        }
+    }
+
+    // Name Constraints from trusted root.
+    for ext in root_x509.extensions() {
+        if ext.oid.to_id_string() == oid::EXT_NAME_CONSTRAINTS && !ext.critical {
             errors.push(format!(
                 "trusted root ({}) has Name Constraints extension \
                  that is not marked critical",
@@ -887,6 +1146,10 @@ fn check_trusted_root(
     if let Ok(Some(nc_ext)) = root_x509.name_constraints() {
         let nc = &nc_ext.value;
         for (child_depth, (_, child_cert)) in parsed.iter().enumerate() {
+            // RFC 5280: Self-issued intermediates are exempt from NC
+            if child_depth > 0 && is_self_issued(child_cert) {
+                continue;
+            }
             let nc_errors = check_name_constraints(
                 nc,
                 child_cert,
@@ -953,7 +1216,8 @@ fn check_leaf_hostname(
     let Some((_, leaf)) = parsed.first() else {
         return;
     };
-    if !verify_hostname(leaf, host) {
+    let allow_cn = options.policy != VerifyPolicy::WebPki;
+    if !verify_hostname(leaf, host, allow_cn) {
         let san_names = extract_san_dns_names(leaf);
         let cn = extract_cn(leaf);
         let mut names: Vec<String> = san_names;
@@ -1001,6 +1265,32 @@ fn check_leaf_ip(
     };
     if !verify_ip(leaf, ip) {
         errors.push(format!("IP address '{}' does not match certificate", ip));
+    }
+}
+
+/// CRL strict validation: CRLNumber must be present and non-critical (RFC 5280 Section 5.2.3).
+fn check_crl_strict(options: &VerifyOptions, errors: &mut Vec<String>) {
+    if options.crl_ders.is_empty() || !(options.crl_check_leaf || options.crl_check_all) {
+        return;
+    }
+    for crl_der in &options.crl_ders {
+        if let Ok((_, crl)) =
+            x509_parser::revocation_list::CertificateRevocationList::from_der(crl_der)
+        {
+            let crl_number_ext = crl
+                .extensions()
+                .iter()
+                .find(|e| e.oid.to_id_string() == "2.5.29.20");
+            match crl_number_ext {
+                Some(ext) if ext.critical => {
+                    errors.push("CRL has CRL Number extension marked critical".to_string());
+                }
+                None => {
+                    errors.push("CRL is missing CRL Number extension".to_string());
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -1057,15 +1347,36 @@ pub fn verify_pem_chain(
     verify_chain(&chain_der, trust_store, hostname)
 }
 
-/// Convenience function: parse a PEM chain and verify with options.
+/// Parse a PEM bundle, build the optimal chain via path building, and verify.
+///
+/// The first certificate in the PEM is the leaf. Remaining certificates form
+/// the untrusted intermediate pool. A DFS path builder finds the shortest
+/// chain from the leaf to a trust anchor.
+#[allow(clippy::indexing_slicing)] // all_ders[0] and [1..] guarded by is_empty() check above
 pub fn verify_pem_chain_with_options(
     pem_data: &[u8],
     trust_store: &TrustStore,
     hostname: Option<&str>,
     options: &VerifyOptions,
 ) -> Result<VerificationResult, XcertError> {
-    let chain_der = parse_pem_chain(pem_data)?;
-    verify_chain_with_options(&chain_der, trust_store, hostname, options)
+    let all_ders = parse_pem_chain(pem_data)?;
+    if all_ders.is_empty() {
+        return Err(XcertError::VerifyError("empty certificate chain".into()));
+    }
+
+    // Path building: first cert is leaf, rest form the intermediate pool.
+    let leaf_der = &all_ders[0];
+    let intermediates: Vec<(Vec<u8>, X509Certificate)> = all_ders[1..]
+        .iter()
+        .filter_map(|der| {
+            X509Certificate::from_der(der)
+                .ok()
+                .map(|(_, cert)| (der.clone(), cert))
+        })
+        .collect();
+
+    let chain = build_chain_dfs(leaf_der, &intermediates, trust_store);
+    verify_chain_with_options(&chain, trust_store, hostname, options)
 }
 
 /// Build a complete chain by combining a leaf certificate with untrusted
@@ -1073,7 +1384,7 @@ pub fn verify_pem_chain_with_options(
 ///
 /// This mirrors `openssl verify -untrusted intermediates.pem cert.pem`:
 /// the leaf cert is provided separately, and intermediates are loaded from
-/// a PEM file to be prepended to the chain in issuer order.
+/// a PEM file. Uses DFS path building to find the optimal chain.
 #[allow(clippy::indexing_slicing)]
 pub fn verify_with_untrusted(
     leaf_der: &[u8],
@@ -1082,45 +1393,116 @@ pub fn verify_with_untrusted(
     hostname: Option<&str>,
     options: &VerifyOptions,
 ) -> Result<VerificationResult, XcertError> {
-    // Parse the intermediates
     let intermediate_der = parse_pem_chain(untrusted_pem)?;
+    let intermediates: Vec<(Vec<u8>, X509Certificate)> = intermediate_der
+        .iter()
+        .filter_map(|der| {
+            X509Certificate::from_der(der)
+                .ok()
+                .map(|(_, cert)| (der.clone(), cert))
+        })
+        .collect();
 
-    // Parse all intermediates so we can search them
-    let mut intermediates: Vec<(Vec<u8>, X509Certificate)> = Vec::new();
-    for der in &intermediate_der {
-        if let Ok((_, cert)) = X509Certificate::from_der(der) {
-            intermediates.push((der.clone(), cert));
-        }
-    }
+    let chain = build_chain_dfs(leaf_der, &intermediates, trust_store);
+    verify_chain_with_options(&chain, trust_store, hostname, options)
+}
 
-    // Build the chain: start with leaf, then find intermediates by issuer
-    let mut chain = vec![leaf_der.to_vec()];
-    let (_, leaf) = X509Certificate::from_der(leaf_der)
-        .map_err(|e| XcertError::ParseError(format!("failed to parse leaf certificate: {}", e)))?;
+/// Build a certificate chain from leaf to trust anchor using DFS with backtracking.
+///
+/// Given a leaf certificate and a pool of untrusted intermediates, finds a valid
+/// chain that terminates at a trust anchor. Tries multiple paths via backtracking
+/// when there are cross-signed or duplicate intermediates.
+fn build_chain_dfs(
+    leaf_der: &[u8],
+    intermediates: &[(Vec<u8>, X509Certificate)],
+    trust_store: &TrustStore,
+) -> Vec<Vec<u8>> {
+    let leaf = match X509Certificate::from_der(leaf_der) {
+        Ok((_, cert)) => cert,
+        Err(_) => return vec![leaf_der.to_vec()],
+    };
 
-    let mut current_issuer_raw = leaf.issuer().as_raw().to_vec();
+    let mut best_chain = vec![leaf_der.to_vec()];
+    let mut current_chain = vec![leaf_der.to_vec()];
     let mut used = vec![false; intermediates.len()];
 
-    for _ in 0..MAX_CHAIN_DEPTH {
-        let mut found = false;
-        for (idx, (der, cert)) in intermediates.iter().enumerate() {
-            if used[idx] {
-                continue;
+    dfs_build(
+        &leaf,
+        &mut current_chain,
+        &mut used,
+        intermediates,
+        trust_store,
+        &mut best_chain,
+    );
+
+    best_chain
+}
+
+/// DFS recursive helper for chain building. Returns true if a valid chain
+/// terminating at a trust anchor was found.
+#[allow(clippy::indexing_slicing)] // used[idx] safe: idx from intermediates.iter().enumerate(), same len
+fn dfs_build(
+    current: &X509Certificate,
+    chain: &mut Vec<Vec<u8>>,
+    used: &mut [bool],
+    intermediates: &[(Vec<u8>, X509Certificate)],
+    trust_store: &TrustStore,
+    best: &mut Vec<Vec<u8>>,
+) -> bool {
+    let issuer_raw = current.issuer().as_raw();
+
+    // Check if current cert is self-signed and in the trust store
+    if current.subject().as_raw() == issuer_raw && current.verify_signature(None).is_ok() {
+        if let Some(last) = chain.last() {
+            if trust_store.contains(last) {
+                *best = chain.clone();
+                return true;
             }
-            if cert.subject().as_raw() == current_issuer_raw.as_slice() {
-                chain.push(der.clone());
-                current_issuer_raw = cert.issuer().as_raw().to_vec();
-                used[idx] = true;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            break;
         }
     }
 
-    verify_chain_with_options(&chain, trust_store, hostname, options)
+    // Check if issuer is in the trust store (chain terminates here)
+    if let Some(candidates) = trust_store.find_by_subject_raw(issuer_raw) {
+        for root_der in candidates {
+            if let Ok((_, root)) = X509Certificate::from_der(root_der) {
+                if current.verify_signature(Some(root.public_key())).is_ok() {
+                    *best = chain.clone();
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Depth limit
+    if chain.len() >= MAX_CHAIN_DEPTH {
+        return false;
+    }
+
+    // Try each unused intermediate as the next link in the chain
+    for (idx, (der, cert)) in intermediates.iter().enumerate() {
+        if used[idx] {
+            continue;
+        }
+        if cert.subject().as_raw() != issuer_raw {
+            continue;
+        }
+        // Verify signature from current cert to candidate issuer
+        if current.verify_signature(Some(cert.public_key())).is_err() {
+            continue;
+        }
+
+        used[idx] = true;
+        chain.push(der.clone());
+
+        if dfs_build(cert, chain, used, intermediates, trust_store, best) {
+            return true;
+        }
+
+        chain.pop();
+        used[idx] = false;
+    }
+
+    false
 }
 
 /// Find the system CA bundle path (same location OpenSSL uses).
@@ -1157,13 +1539,18 @@ pub fn find_system_ca_bundle() -> Option<PathBuf> {
 
 /// Verify that a hostname matches the leaf certificate's names.
 ///
-/// Checks SAN DNS entries first, falls back to CN if no SAN DNS entries exist.
+/// Checks SAN DNS entries first. If `allow_cn_fallback` is true, falls back to
+/// CN when no SAN DNS entries exist. In WebPKI mode CN fallback is disabled.
 /// Supports wildcard matching per RFC 6125.
 ///
 /// Delegates to [`util::verify_hostname_match`] (shared with `check_host`).
-fn verify_hostname(cert: &X509Certificate, hostname: &str) -> bool {
+fn verify_hostname(cert: &X509Certificate, hostname: &str, allow_cn_fallback: bool) -> bool {
     let dns_names = extract_san_dns_names(cert);
-    let cn = extract_cn(cert);
+    let cn = if allow_cn_fallback {
+        extract_cn(cert)
+    } else {
+        None
+    };
     util::verify_hostname_match(&dns_names, cn.as_deref(), hostname)
 }
 
@@ -1327,6 +1714,22 @@ fn check_name_constraints(
                 }
             }
         }
+    }
+
+    // DoS protection: limit the work factor of name constraint checking.
+    let total_names = dns_names.len() + email_names.len() + ip_addrs.len();
+    let excluded_count = nc.excluded_subtrees.as_ref().map_or(0, |s| s.len());
+    let permitted_count = nc.permitted_subtrees.as_ref().map_or(0, |s| s.len());
+    if total_names.saturating_mul(excluded_count + permitted_count) > MAX_NC_WORK_FACTOR {
+        errors.push(format!(
+            "certificate at depth {} ({}) name constraints check exceeds resource limits \
+             ({} names × {} subtrees)",
+            child_depth,
+            subject,
+            total_names,
+            excluded_count + permitted_count
+        ));
+        return errors;
     }
 
     // Check excluded subtrees first (any match is a violation)
@@ -1641,4 +2044,335 @@ pub fn check_crl_revocation(
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// Self-issued certificate detection
+// ---------------------------------------------------------------------------
+
+/// Check if a certificate is self-issued (subject == issuer).
+///
+/// RFC 5280 Section 6.1: Self-issued certificates are special — they do not
+/// count toward chain depth, pathLenConstraint, or name constraints (except
+/// the final certificate in the chain).
+fn is_self_issued(cert: &X509Certificate) -> bool {
+    cert.subject().as_raw() == cert.issuer().as_raw()
+}
+
+// ---------------------------------------------------------------------------
+// WebPKI policy validation (CABF Baseline Requirements)
+// ---------------------------------------------------------------------------
+
+/// WebPKI-specific validation checks per CABF Baseline Requirements.
+#[allow(clippy::indexing_slicing)] // subjects has same length as parsed
+fn check_webpki_policy(
+    parsed: &[(&[u8], X509Certificate)],
+    subjects: &[String],
+    trusted_root_der: &Option<Vec<u8>>,
+    errors: &mut Vec<String>,
+) {
+    for (i, (_, x509)) in parsed.iter().enumerate() {
+        let is_leaf = i == 0;
+
+        if is_leaf {
+            // WebPKI: Leaf must have SAN
+            let has_san = x509
+                .extensions()
+                .iter()
+                .any(|e| e.oid.to_id_string() == "2.5.29.17");
+            if !has_san {
+                errors.push(format!(
+                    "WebPKI: leaf certificate ({}) has no SAN extension",
+                    subjects[i]
+                ));
+            }
+
+            // WebPKI: Leaf must have EKU
+            if x509.extended_key_usage().ok().flatten().is_none() {
+                errors.push(format!(
+                    "WebPKI: leaf certificate ({}) has no EKU extension",
+                    subjects[i]
+                ));
+            }
+
+            // WebPKI: anyExtendedKeyUsage not allowed, EKU must not be critical
+            if let Ok(Some(eku)) = x509.extended_key_usage() {
+                if eku.value.any {
+                    errors.push(format!(
+                        "WebPKI: leaf certificate ({}) has anyExtendedKeyUsage",
+                        subjects[i]
+                    ));
+                }
+                let eku_critical = x509
+                    .extensions()
+                    .iter()
+                    .find(|e| e.oid.to_id_string() == "2.5.29.37")
+                    .is_some_and(|e| e.critical);
+                if eku_critical {
+                    errors.push(format!(
+                        "WebPKI: leaf certificate ({}) has critical EKU",
+                        subjects[i]
+                    ));
+                }
+            }
+
+            // WebPKI: Leaf must not have BC:CA=true
+            if let Some(bc) = x509.basic_constraints().ok().flatten() {
+                if bc.value.ca {
+                    errors.push(format!(
+                        "WebPKI: leaf certificate ({}) has BasicConstraints CA:TRUE",
+                        subjects[i]
+                    ));
+                }
+            }
+
+            // WebPKI: v1 certificates not allowed
+            if x509.version().0 < 2 {
+                errors.push(format!(
+                    "WebPKI: leaf certificate ({}) is version {} (v3 required)",
+                    subjects[i],
+                    x509.version().0 + 1
+                ));
+            }
+
+            // WebPKI: SAN should not be critical when subject is non-empty
+            let subject_empty = x509.subject().as_raw().len() <= 2;
+            if !subject_empty {
+                let san_critical = x509
+                    .extensions()
+                    .iter()
+                    .find(|e| e.oid.to_id_string() == "2.5.29.17")
+                    .is_some_and(|e| e.critical);
+                if san_critical {
+                    errors.push(format!(
+                        "WebPKI: leaf certificate ({}) has critical SAN with non-empty subject",
+                        subjects[i]
+                    ));
+                }
+            }
+
+            // WebPKI: Weak crypto check
+            if let Some(weakness) = check_weak_crypto(x509) {
+                errors.push(format!(
+                    "WebPKI: leaf certificate ({}) {}",
+                    subjects[i], weakness
+                ));
+            }
+
+            // WebPKI: Public suffix wildcard in SAN
+            if let Ok(Some(san)) = x509.subject_alternative_name() {
+                for gn in &san.value.general_names {
+                    if let GeneralName::DNSName(name) = gn {
+                        if let Some(base) = name.strip_prefix("*.") {
+                            if is_public_suffix(base) {
+                                errors.push(format!(
+                                    "WebPKI: leaf certificate ({}) has wildcard on public suffix '{}'",
+                                    subjects[i], name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // WebPKI: Malformed AIA
+            for ext in x509.extensions() {
+                if ext.oid.to_id_string() == "1.3.6.1.5.5.7.1.1"
+                    && x509_parser::extensions::AuthorityInfoAccess::from_der(ext.value).is_err()
+                {
+                    errors.push(format!(
+                        "WebPKI: leaf certificate ({}) has malformed AIA extension",
+                        subjects[i]
+                    ));
+                }
+            }
+        }
+
+        // WebPKI: NC with empty subtrees is malformed
+        if !is_leaf {
+            for ext in x509.extensions() {
+                if ext.oid.to_id_string() == "2.5.29.30" {
+                    if let Ok(Some(nc)) = x509.name_constraints() {
+                        let permitted_empty = nc
+                            .value
+                            .permitted_subtrees
+                            .as_ref()
+                            .is_some_and(|s| s.is_empty());
+                        let excluded_empty = nc
+                            .value
+                            .excluded_subtrees
+                            .as_ref()
+                            .is_some_and(|s| s.is_empty());
+                        let both_absent = nc.value.permitted_subtrees.is_none()
+                            && nc.value.excluded_subtrees.is_none();
+                        if permitted_empty || excluded_empty || both_absent {
+                            errors.push(format!(
+                                "WebPKI: certificate at depth {} ({}) has empty or malformed Name Constraints",
+                                i, subjects[i]
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // WebPKI: Root certificate checks
+    let root_certs_to_check: Vec<(&X509Certificate, String)> = {
+        let mut roots = Vec::new();
+        if let Some((_, last_cert)) = parsed.last() {
+            if last_cert.subject().as_raw() == last_cert.issuer().as_raw() {
+                roots.push((
+                    last_cert,
+                    crate::parser::build_dn(last_cert.subject()).to_oneline(),
+                ));
+            }
+        }
+        roots
+    };
+
+    for (root_x509, root_subject) in &root_certs_to_check {
+        if root_x509.extended_key_usage().ok().flatten().is_some() {
+            errors.push(format!("WebPKI: root ({}) has EKU extension", root_subject));
+        }
+        if let Some(weakness) = check_weak_crypto(root_x509) {
+            errors.push(format!("WebPKI: root ({}) {}", root_subject, weakness));
+        }
+        webpki_check_root_aki(root_x509, root_subject, errors);
+    }
+
+    // Check trusted root from store (if not in chain)
+    if let Some(ref root_der) = trusted_root_der {
+        if let Ok((_, root_x509)) = X509Certificate::from_der(root_der) {
+            let root_subject = crate::parser::build_dn(root_x509.subject()).to_oneline();
+            let already_checked = parsed
+                .last()
+                .is_some_and(|(der, _)| *der == root_der.as_slice());
+            if !already_checked {
+                if root_x509.extended_key_usage().ok().flatten().is_some() {
+                    errors.push(format!("WebPKI: root ({}) has EKU extension", root_subject));
+                }
+                if let Some(weakness) = check_weak_crypto(&root_x509) {
+                    errors.push(format!("WebPKI: root ({}) {}", root_subject, weakness));
+                }
+                webpki_check_root_aki(&root_x509, &root_subject, errors);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WebPKI helper functions
+// ---------------------------------------------------------------------------
+
+/// Check for weak or forbidden cryptographic algorithms (WebPKI / CABF BRs).
+fn check_weak_crypto(cert: &X509Certificate) -> Option<String> {
+    let pk = cert.public_key();
+    let algo_oid = pk.algorithm.algorithm.to_id_string();
+
+    match algo_oid.as_str() {
+        // DSA is forbidden in WebPKI
+        "1.2.840.10040.4.1" => Some("uses forbidden DSA key algorithm".into()),
+        // RSA
+        "1.2.840.113549.1.1.1" => {
+            if let Ok(x509_parser::public_key::PublicKey::RSA(rsa)) = pk.parsed() {
+                let mod_bytes = rsa.modulus;
+                // Skip leading zero padding byte
+                let effective = mod_bytes
+                    .get(1..)
+                    .filter(|_| mod_bytes.first() == Some(&0))
+                    .unwrap_or(mod_bytes);
+                let key_bits = effective.len() * 8;
+                if key_bits < 2048 {
+                    return Some(format!(
+                        "has weak RSA key ({} bits, minimum 2048)",
+                        key_bits
+                    ));
+                }
+                if key_bits % 8 != 0 {
+                    return Some(format!(
+                        "has RSA key size not divisible by 8 ({} bits)",
+                        key_bits
+                    ));
+                }
+            }
+            None
+        }
+        // EC
+        "1.2.840.10045.2.1" => {
+            if let Some(params) = &pk.algorithm.parameters {
+                if let Ok(oid) = params.as_oid() {
+                    let curve = oid.to_id_string();
+                    // P-192 (secp192r1) is forbidden
+                    if curve == "1.2.840.10045.3.1.1" {
+                        return Some("uses forbidden P-192 elliptic curve".into());
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Simple public suffix check for wildcard SAN validation.
+/// Returns true if the domain is a TLD (single label with no dots).
+fn is_public_suffix(domain: &str) -> bool {
+    !domain.contains('.')
+}
+
+/// WebPKI root AKI validation: if AKI is present on a self-signed root,
+/// keyIdentifier must be present and must match SKI; authorityCertIssuer
+/// and authorityCertSerialNumber must not be present.
+fn webpki_check_root_aki(
+    root_x509: &X509Certificate,
+    root_subject: &str,
+    errors: &mut Vec<String>,
+) {
+    let aki_ext = root_x509
+        .extensions()
+        .iter()
+        .find(|e| e.oid.to_id_string() == "2.5.29.35");
+    let ski_ext = root_x509
+        .extensions()
+        .iter()
+        .find(|e| e.oid.to_id_string() == "2.5.29.14");
+
+    if let Some(ext) = aki_ext {
+        if let ParsedExtension::AuthorityKeyIdentifier(aki) = ext.parsed_extension() {
+            let has_key_id = aki.key_identifier.is_some();
+            let has_cert_issuer = aki.authority_cert_issuer.is_some();
+            let has_cert_serial = aki.authority_cert_serial.is_some();
+
+            if !has_key_id {
+                errors.push(format!(
+                    "WebPKI: root ({}) AKI missing keyIdentifier",
+                    root_subject
+                ));
+            }
+            if has_cert_issuer {
+                errors.push(format!(
+                    "WebPKI: root ({}) AKI has authorityCertIssuer",
+                    root_subject
+                ));
+            }
+            if has_cert_serial {
+                errors.push(format!(
+                    "WebPKI: root ({}) AKI has authorityCertSerialNumber",
+                    root_subject
+                ));
+            }
+            // AKI keyIdentifier must match SKI
+            if let (Some(aki_kid), Some(ski_raw)) = (&aki.key_identifier, ski_ext) {
+                if let ParsedExtension::SubjectKeyIdentifier(ski_val) = ski_raw.parsed_extension() {
+                    if aki_kid.0 != ski_val.0 {
+                        errors.push(format!(
+                            "WebPKI: root ({}) AKI keyIdentifier does not match SKI",
+                            root_subject
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
