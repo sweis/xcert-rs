@@ -1061,7 +1061,7 @@ fn check_trusted_root(
                 .extensions()
                 .iter()
                 .find(|e| e.oid.to_id_string() == "2.5.29.19")
-                .map_or(false, |e| e.critical);
+                .is_some_and(|e| e.critical);
             if !bc_critical {
                 errors.push(format!(
                     "trusted root ({}) has BasicConstraints not marked critical",
@@ -1327,6 +1327,7 @@ pub fn verify_pem_chain(
 /// The first certificate in the PEM is the leaf. Remaining certificates form
 /// the untrusted intermediate pool. A DFS path builder finds the shortest
 /// chain from the leaf to a trust anchor.
+#[allow(clippy::indexing_slicing)] // all_ders[0] and [1..] guarded by is_empty() check above
 pub fn verify_pem_chain_with_options(
     pem_data: &[u8],
     trust_store: &TrustStore,
@@ -1414,6 +1415,7 @@ fn build_chain_dfs(
 
 /// DFS recursive helper for chain building. Returns true if a valid chain
 /// terminating at a trust anchor was found.
+#[allow(clippy::indexing_slicing)] // used[idx] safe: idx from intermediates.iter().enumerate(), same len
 fn dfs_build(
     current: &X509Certificate,
     chain: &mut Vec<Vec<u8>>,
@@ -2081,7 +2083,7 @@ fn check_webpki_policy(
                     .extensions()
                     .iter()
                     .find(|e| e.oid.to_id_string() == "2.5.29.37")
-                    .map_or(false, |e| e.critical);
+                    .is_some_and(|e| e.critical);
                 if eku_critical {
                     errors.push(format!(
                         "WebPKI: leaf certificate ({}) has critical EKU",
@@ -2116,7 +2118,7 @@ fn check_webpki_policy(
                     .extensions()
                     .iter()
                     .find(|e| e.oid.to_id_string() == "2.5.29.17")
-                    .map_or(false, |e| e.critical);
+                    .is_some_and(|e| e.critical);
                 if san_critical {
                     errors.push(format!(
                         "WebPKI: leaf certificate ({}) has critical SAN with non-empty subject",
@@ -2151,13 +2153,13 @@ fn check_webpki_policy(
 
             // WebPKI: Malformed AIA
             for ext in x509.extensions() {
-                if ext.oid.to_id_string() == "1.3.6.1.5.5.7.1.1" {
-                    if x509_parser::extensions::AuthorityInfoAccess::from_der(ext.value).is_err() {
-                        errors.push(format!(
-                            "WebPKI: leaf certificate ({}) has malformed AIA extension",
-                            subjects[i]
-                        ));
-                    }
+                if ext.oid.to_id_string() == "1.3.6.1.5.5.7.1.1"
+                    && x509_parser::extensions::AuthorityInfoAccess::from_der(ext.value).is_err()
+                {
+                    errors.push(format!(
+                        "WebPKI: leaf certificate ({}) has malformed AIA extension",
+                        subjects[i]
+                    ));
                 }
             }
         }
@@ -2171,12 +2173,12 @@ fn check_webpki_policy(
                             .value
                             .permitted_subtrees
                             .as_ref()
-                            .map_or(false, |s| s.is_empty());
+                            .is_some_and(|s| s.is_empty());
                         let excluded_empty = nc
                             .value
                             .excluded_subtrees
                             .as_ref()
-                            .map_or(false, |s| s.is_empty());
+                            .is_some_and(|s| s.is_empty());
                         let both_absent = nc.value.permitted_subtrees.is_none()
                             && nc.value.excluded_subtrees.is_none();
                         if permitted_empty || excluded_empty || both_absent {
@@ -2221,7 +2223,7 @@ fn check_webpki_policy(
             let root_subject = crate::parser::build_dn(root_x509.subject()).to_oneline();
             let already_checked = parsed
                 .last()
-                .map_or(false, |(der, _)| *der == root_der.as_slice());
+                .is_some_and(|(der, _)| *der == root_der.as_slice());
             if !already_checked {
                 if root_x509.extended_key_usage().ok().flatten().is_some() {
                     errors.push(format!("WebPKI: root ({}) has EKU extension", root_subject));

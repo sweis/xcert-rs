@@ -3850,6 +3850,7 @@ mod limbo {
     /// Categories:
     /// - PATH_BUILDING: We verify chains as-given; we don't build paths from
     ///   a pool of untrusted intermediates.
+    ///
     /// Remaining known failures after implementing: self-issued exemptions,
     /// RFC 5280 strict validation, CRL strict, NC DoS protection, WebPKI
     /// policy mode, and DFS path building.
