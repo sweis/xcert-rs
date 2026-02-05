@@ -79,6 +79,11 @@ pub const EKU_EMAIL_PROTECTION: &str = "1.3.6.1.5.5.7.3.4";
 pub const EKU_TIME_STAMPING: &str = "1.3.6.1.5.5.7.3.8";
 pub const EKU_OCSP_SIGNING: &str = "1.3.6.1.5.5.7.3.9";
 pub const EKU_ANY: &str = "2.5.29.37.0";
+pub const EKU_IPSEC_END_SYSTEM: &str = "1.3.6.1.5.5.7.3.5";
+pub const EKU_IPSEC_TUNNEL: &str = "1.3.6.1.5.5.7.3.6";
+pub const EKU_IPSEC_USER: &str = "1.3.6.1.5.5.7.3.7";
+pub const EKU_MS_SERVER_GATED_CRYPTO: &str = "1.3.6.1.4.1.311.10.3.3";
+pub const EKU_NS_SERVER_GATED_CRYPTO: &str = "2.16.840.1.113730.4.1";
 
 // ── Certificate Transparency (RFC 6962) ──────────────────────────────────
 
