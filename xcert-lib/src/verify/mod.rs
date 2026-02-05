@@ -61,17 +61,17 @@ pub struct VerificationResult {
 
 impl std::fmt::Display for VerificationResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Format: [short_name], [serial], [OK/FAIL], [optional reason]
-        if let Some(leaf) = self.chain.first() {
-            write!(f, "{}, {}, ", leaf.short_name, leaf.serial)?;
-        }
+        // Format: [OK/FAIL], [short_name], [serial], [optional reason]
         if self.is_valid {
             write!(f, "OK")?;
         } else {
             write!(f, "FAIL")?;
-            if !self.errors.is_empty() {
-                write!(f, ", {}", self.errors.join("; "))?;
-            }
+        }
+        if let Some(leaf) = self.chain.first() {
+            write!(f, ", {}, {}", leaf.short_name, leaf.serial)?;
+        }
+        if !self.is_valid && !self.errors.is_empty() {
+            write!(f, ", {}", self.errors.join("; "))?;
         }
         Ok(())
     }

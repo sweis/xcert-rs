@@ -2,10 +2,65 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use rayon::prelude::*;
+use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Color scheme for CLI output (consistent with xcert-lib display).
+///
+/// - Dates: cyan
+/// - Hex values (serial, fingerprint): magenta
+/// - URLs: blue
+/// - Strings (names, algorithms): green
+/// - Labels/keys: bold
+/// - OK/PASS: green
+/// - FAIL: red
+mod colors {
+    use colored::{ColoredString, Colorize};
+
+    /// Format a date value.
+    pub fn date(s: &str) -> ColoredString {
+        s.cyan()
+    }
+
+    /// Format a hex value (serial numbers, fingerprints).
+    pub fn hex(s: &str) -> ColoredString {
+        s.magenta()
+    }
+
+    /// Format a URL.
+    pub fn url(s: &str) -> ColoredString {
+        s.blue()
+    }
+
+    /// Format a string value (names, algorithms, etc.).
+    pub fn string(s: &str) -> ColoredString {
+        s.green()
+    }
+
+    /// Format a label/key.
+    pub fn label(s: &str) -> ColoredString {
+        s.bold()
+    }
+
+    /// Format an OK/PASS result.
+    pub fn ok(s: &str) -> ColoredString {
+        s.green()
+    }
+
+    /// Format a FAIL result.
+    pub fn fail(s: &str) -> ColoredString {
+        s.red()
+    }
+
+    /// Format a number.
+    pub fn number<T: std::fmt::Display>(n: T) -> ColoredString {
+        n.to_string().cyan()
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -39,9 +94,10 @@ enum Commands {
                       \n  xcert show --json cert.pem\
                       \n  xcert show --all cert.pem\
                       \n  xcert show cert.der\
+                      \n  xcert show /etc/ssl/certs/ --recurse --json\
                       \n  cat cert.pem | xcert show")]
     Show {
-        /// Certificate file (PEM or DER). Reads from stdin if omitted.
+        /// Certificate file or directory. Reads from stdin if omitted.
         file: Option<PathBuf>,
         /// Force DER input parsing (default: auto-detect)
         #[arg(long)]
@@ -55,6 +111,9 @@ enum Commands {
         /// Show all fields including signature bytes
         #[arg(long)]
         all: bool,
+        /// Recurse into subdirectories (directory mode)
+        #[arg(short, long)]
+        recurse: bool,
     },
     /// Extract a single field from the certificate
     #[command(after_help = "FIELDS:\n\
@@ -78,12 +137,13 @@ enum Commands {
                       \n  xcert field fingerprint cert.pem\
                       \n  xcert field fingerprint --digest sha384 cert.pem\
                       \n  xcert field san --json cert.pem\
+                      \n  xcert field serial /etc/ssl/certs/ --recurse --json\
                       \n  xcert field extensions --ext subjectAltName cert.pem\
                       \n  xcert field extensions --ext \"Key Usage\" cert.pem")]
     Field {
         /// Field to extract
         field: FieldName,
-        /// Certificate file. Reads from stdin if omitted.
+        /// Certificate file or directory. Reads from stdin if omitted.
         file: Option<PathBuf>,
         /// Force DER input parsing (default: auto-detect)
         #[arg(long)]
@@ -100,6 +160,9 @@ enum Commands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+        /// Recurse into subdirectories (directory mode)
+        #[arg(short, long)]
+        recurse: bool,
     },
     /// Check certificate properties (exit code 0 = pass, 1 = fail)
     #[command(after_help = "CHECKS:\n\
@@ -117,6 +180,7 @@ enum Commands {
                       \n  xcert check expiry 1w cert.pem          # valid for 1+ week?\
                       \n  xcert check expiry 2h30m cert.pem       # valid for 2.5+ hours?\
                       \n  xcert check host www.example.com cert.pem\
+                      \n  xcert check expiry 30d /etc/ssl/certs/ --recurse --json\
                       \n  xcert check email user@example.com cert.pem\
                       \n  xcert check ip 93.184.216.34 cert.pem")]
     Check {
@@ -132,6 +196,9 @@ enum Commands {
         /// Force PEM input parsing (default: auto-detect)
         #[arg(long)]
         pem: bool,
+        /// Output in JSON format (directory mode)
+        #[arg(long)]
+        json: bool,
         /// Only print failures (directory mode)
         #[arg(long)]
         failures_only: bool,
@@ -368,7 +435,92 @@ struct BatchResult {
     detail: String,
 }
 
-/// Process certificate files in parallel, printing `filename: result`.
+/// JSON output for a single batch result.
+#[derive(Serialize)]
+struct JsonBatchResult<T: Serialize> {
+    file: String,
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<T>,
+}
+
+/// JSON output for batch operations.
+#[derive(Serialize)]
+struct JsonBatchOutput<T: Serialize> {
+    results: Vec<JsonBatchResult<T>>,
+    summary: JsonBatchSummary,
+}
+
+/// Summary statistics for batch operations.
+#[derive(Serialize)]
+struct JsonBatchSummary {
+    total: usize,
+    passed: usize,
+    failed: usize,
+}
+
+/// Result of a check operation for JSON output.
+#[derive(Serialize)]
+struct CheckResult {
+    check: String,
+    value: String,
+    passed: bool,
+}
+
+/// Process certificate files in parallel and output JSON.
+///
+/// Returns (json_output, failure_count).
+fn run_batch_json<T, F>(files: &[PathBuf], op: F) -> (JsonBatchOutput<T>, usize)
+where
+    T: Serialize + Send,
+    F: Fn(&Path) -> Result<T, String> + Sync,
+{
+    let results: Vec<(PathBuf, Result<T, String>)> =
+        files.par_iter().map(|f| (f.clone(), op(f))).collect();
+
+    let mut json_results = Vec::new();
+    let mut passed = 0;
+    let mut failed = 0;
+
+    for (path, result) in results {
+        let path_str = path.display().to_string();
+        match result {
+            Ok(data) => {
+                passed += 1;
+                json_results.push(JsonBatchResult {
+                    file: path_str,
+                    success: true,
+                    error: None,
+                    data: Some(data),
+                });
+            }
+            Err(e) => {
+                failed += 1;
+                json_results.push(JsonBatchResult {
+                    file: path_str,
+                    success: false,
+                    error: Some(e),
+                    data: None,
+                });
+            }
+        }
+    }
+
+    let output = JsonBatchOutput {
+        results: json_results,
+        summary: JsonBatchSummary {
+            total: passed + failed,
+            passed,
+            failed,
+        },
+    };
+
+    (output, failed)
+}
+
+/// Process certificate files in parallel, printing `filename: result` with colors.
 ///
 /// The closure may return multiple results per file (e.g. for CA bundles
 /// containing many independent certificates).
@@ -390,16 +542,43 @@ where
                 continue;
             }
             if r.pass {
-                println!("{}: {}", r.path, r.detail);
+                println!("{}: {}", colors::label(&r.path), r.detail);
             } else {
-                eprintln!("{}: {}", r.path, r.detail);
+                eprintln!("{}: {}", colors::label(&r.path), r.detail);
             }
         }
     }
     failures
 }
 
-/// Convert a verification result (or error) into a BatchResult.
+/// Format a verification result with colors.
+///
+/// Format: [OK/FAIL], [short_name], [serial], [optional reason]
+fn format_verify_result_colored(r: &xcert_lib::VerificationResult) -> String {
+    let mut parts = Vec::new();
+
+    // Status (OK or FAIL)
+    if r.is_valid {
+        parts.push(colors::ok("OK").to_string());
+    } else {
+        parts.push(colors::fail("FAIL").to_string());
+    }
+
+    // Short name and serial from leaf cert
+    if let Some(leaf) = r.chain.first() {
+        parts.push(colors::string(&leaf.short_name).to_string());
+        parts.push(colors::hex(&leaf.serial).to_string());
+    }
+
+    // Error reasons for failures
+    if !r.is_valid && !r.errors.is_empty() {
+        parts.push(r.errors.join("; "));
+    }
+
+    parts.join(", ")
+}
+
+/// Convert a verification result (or error) into a BatchResult with colored output.
 fn verify_to_batch(
     label: String,
     result: Result<xcert_lib::VerificationResult, impl std::fmt::Display>,
@@ -408,19 +587,19 @@ fn verify_to_batch(
         Ok(r) => BatchResult {
             path: label,
             pass: r.is_valid,
-            detail: format!("{}", r),
+            detail: format_verify_result_colored(&r),
         },
         Err(e) => BatchResult {
             path: label,
             pass: false,
-            detail: format!("FAIL ({})", e),
+            detail: format!("{} ({})", colors::fail("FAIL"), e),
         },
     }
 }
 
 /// Print a single-file verification result (JSON, text valid, or text invalid).
 ///
-/// Output format: `[filename]: [short identifier], [serial], [OK / FAIL], [optional reason]`
+/// Output format: `[filename]: [OK/FAIL], [short_name], [serial], [optional reason]`
 fn print_verify_result(
     label: &str,
     result: &xcert_lib::VerificationResult,
@@ -430,19 +609,105 @@ fn print_verify_result(
     if json {
         println!("{}", serde_json::to_string_pretty(result)?);
     } else if result.is_valid {
-        println!("{}: {}", label, result);
+        println!(
+            "{}: {}",
+            colors::label(label),
+            format_verify_result_colored(result)
+        );
         if show_chain {
             for info in &result.chain {
                 println!(
-                    "depth {}: subject = {}, issuer = {}",
-                    info.depth, info.subject, info.issuer
+                    "{} {}: {} = {}, {} = {}",
+                    colors::label("depth"),
+                    colors::number(info.depth),
+                    colors::label("subject"),
+                    colors::string(&info.subject),
+                    colors::label("issuer"),
+                    colors::string(&info.issuer)
                 );
             }
         }
     } else {
-        eprintln!("{}: {}", label, result);
+        eprintln!(
+            "{}: {}",
+            colors::label(label),
+            format_verify_result_colored(result)
+        );
     }
     Ok(())
+}
+
+/// Extract a field value from a certificate (plain string, no colors).
+fn extract_field_value(
+    cert: &xcert_lib::CertificateInfo,
+    field: &FieldName,
+    digest: &str,
+) -> Result<String, String> {
+    Ok(match field {
+        FieldName::Subject => cert.subject_string(),
+        FieldName::Issuer => cert.issuer_string(),
+        FieldName::Serial => cert.serial_hex().to_string(),
+        FieldName::NotBefore => cert.not_before_string(),
+        FieldName::NotAfter => cert.not_after_string(),
+        FieldName::Fingerprint => {
+            let alg = match digest {
+                "sha256" => xcert_lib::DigestAlgorithm::Sha256,
+                "sha384" => xcert_lib::DigestAlgorithm::Sha384,
+                "sha512" => xcert_lib::DigestAlgorithm::Sha512,
+                "sha1" => xcert_lib::DigestAlgorithm::Sha1,
+                _ => return Err(format!("Unsupported digest: {}", digest)),
+            };
+            cert.fingerprint(alg)
+        }
+        FieldName::PublicKey => cert.public_key_pem().to_string(),
+        FieldName::Modulus => cert
+            .modulus_hex()
+            .unwrap_or("(not an RSA certificate)")
+            .to_string(),
+        FieldName::Exponent => cert
+            .public_key
+            .exponent
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "(not an RSA certificate)".to_string()),
+        FieldName::Emails => cert.emails().join(", "),
+        FieldName::San => cert
+            .san_entries()
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        FieldName::OcspUrl => cert.ocsp_urls().join(", "),
+        FieldName::KeyUsage => cert.key_usage().map(|u| u.join(", ")).unwrap_or_default(),
+        FieldName::ExtKeyUsage => cert
+            .ext_key_usage()
+            .map(|u| u.join(", "))
+            .unwrap_or_default(),
+        FieldName::Extensions => cert
+            .extensions
+            .iter()
+            .map(|e| format!("{}: {:?}", e.name, e.value))
+            .collect::<Vec<_>>()
+            .join("; "),
+    })
+}
+
+/// Format a field value with colors based on field type.
+fn format_field_colored(field: &FieldName, value: &str) -> String {
+    match field {
+        FieldName::Subject | FieldName::Issuer | FieldName::Emails | FieldName::San => {
+            colors::string(value).to_string()
+        }
+        FieldName::Serial | FieldName::Fingerprint | FieldName::Modulus => {
+            colors::hex(value).to_string()
+        }
+        FieldName::NotBefore | FieldName::NotAfter => colors::date(value).to_string(),
+        FieldName::OcspUrl => colors::url(value).to_string(),
+        FieldName::Exponent => colors::number(value).to_string(),
+        FieldName::KeyUsage | FieldName::ExtKeyUsage | FieldName::Extensions => {
+            colors::string(value).to_string()
+        }
+        FieldName::PublicKey => value.to_string(),
+    }
 }
 
 fn main() {
@@ -462,7 +727,68 @@ fn run() -> Result<()> {
             pem,
             json,
             all,
+            recurse,
         } => {
+            // Directory mode: process all cert files
+            if let Some(path) = file {
+                if path.is_dir() {
+                    let files = find_cert_files(path, *recurse);
+                    if files.is_empty() {
+                        anyhow::bail!(
+                            "No certificate files (.pem, .der, .crt, .cer) found in {}",
+                            path.display()
+                        );
+                    }
+                    let force_der = *der;
+                    let force_pem = *pem;
+                    let show_all = *all;
+
+                    if *json {
+                        let (output, _) = run_batch_json(&files, |f| {
+                            let data = std::fs::read(f).map_err(|e| e.to_string())?;
+                            let cert = parse_input(&data, force_der, force_pem)
+                                .map_err(|e| e.to_string())?;
+                            Ok(cert)
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output)?);
+                    } else {
+                        for f in &files {
+                            let data = match std::fs::read(f) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    eprintln!(
+                                        "{}: {} (read error: {})",
+                                        colors::label(&f.display().to_string()),
+                                        colors::fail("ERROR"),
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+                            let cert = match parse_input(&data, force_der, force_pem) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    eprintln!(
+                                        "{}: {} (parse error: {})",
+                                        colors::label(&f.display().to_string()),
+                                        colors::fail("ERROR"),
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+                            println!(
+                                "{}:\n{}",
+                                colors::label(&f.display().to_string()),
+                                xcert_lib::display_text(&cert, show_all)
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Single file mode
             let input = read_input(file.as_ref())?;
             let cert = parse_input(&input, *der, *pem)?;
 
@@ -480,7 +806,81 @@ fn run() -> Result<()> {
             digest,
             ext,
             json,
+            recurse,
         } => {
+            // Directory mode: process all cert files
+            if let Some(path) = file {
+                if path.is_dir() {
+                    let files = find_cert_files(path, *recurse);
+                    if files.is_empty() {
+                        anyhow::bail!(
+                            "No certificate files (.pem, .der, .crt, .cer) found in {}",
+                            path.display()
+                        );
+                    }
+                    let force_der = *der;
+                    let force_pem = *pem;
+                    let field_type = field.clone();
+                    let digest_alg = digest.clone();
+
+                    if *json {
+                        let (output, _) = run_batch_json(&files, |f| {
+                            let data = std::fs::read(f).map_err(|e| e.to_string())?;
+                            let cert = parse_input(&data, force_der, force_pem)
+                                .map_err(|e| e.to_string())?;
+                            extract_field_value(&cert, &field_type, &digest_alg)
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output)?);
+                    } else {
+                        for f in &files {
+                            let data = match std::fs::read(f) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    eprintln!(
+                                        "{}: {} (read error: {})",
+                                        colors::label(&f.display().to_string()),
+                                        colors::fail("ERROR"),
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+                            let cert = match parse_input(&data, force_der, force_pem) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    eprintln!(
+                                        "{}: {} (parse error: {})",
+                                        colors::label(&f.display().to_string()),
+                                        colors::fail("ERROR"),
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+                            match extract_field_value(&cert, &field_type, &digest_alg) {
+                                Ok(val) => {
+                                    println!(
+                                        "{}: {}",
+                                        colors::label(&f.display().to_string()),
+                                        format_field_colored(&field_type, &val)
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "{}: {} ({})",
+                                        colors::label(&f.display().to_string()),
+                                        colors::fail("ERROR"),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Single file mode
             let input = read_input(file.as_ref())?;
             let cert = parse_input(&input, *der, *pem)?;
 
@@ -500,8 +900,12 @@ fn run() -> Result<()> {
                     for e in matching {
                         println!(
                             "{}{}: {:?}",
-                            e.name,
-                            if e.critical { " [critical]" } else { "" },
+                            colors::label(&e.name),
+                            if e.critical {
+                                format!(" {}", "[critical]".red())
+                            } else {
+                                String::new()
+                            },
                             e.value
                         );
                     }
@@ -510,11 +914,11 @@ fn run() -> Result<()> {
             }
 
             let output = match field {
-                FieldName::Subject => cert.subject_string(),
-                FieldName::Issuer => cert.issuer_string(),
-                FieldName::Serial => cert.serial_hex().to_string(),
-                FieldName::NotBefore => cert.not_before_string(),
-                FieldName::NotAfter => cert.not_after_string(),
+                FieldName::Subject => colors::string(&cert.subject_string()).to_string(),
+                FieldName::Issuer => colors::string(&cert.issuer_string()).to_string(),
+                FieldName::Serial => colors::hex(cert.serial_hex()).to_string(),
+                FieldName::NotBefore => colors::date(&cert.not_before_string()).to_string(),
+                FieldName::NotAfter => colors::date(&cert.not_after_string()).to_string(),
                 FieldName::Fingerprint => {
                     let alg = match digest.as_str() {
                         "sha256" => xcert_lib::DigestAlgorithm::Sha256,
@@ -526,35 +930,62 @@ fn run() -> Result<()> {
                             digest
                         ),
                     };
-                    cert.fingerprint(alg)
+                    colors::hex(&cert.fingerprint(alg)).to_string()
                 }
                 FieldName::PublicKey => cert.public_key_pem().to_string(),
-                FieldName::Modulus => cert
-                    .modulus_hex()
-                    .unwrap_or("(not an RSA certificate)")
-                    .to_string(),
+                FieldName::Modulus => {
+                    let val = cert.modulus_hex().unwrap_or("(not an RSA certificate)");
+                    if val.starts_with('(') {
+                        val.to_string()
+                    } else {
+                        colors::hex(val).to_string()
+                    }
+                }
                 FieldName::Exponent => cert
                     .public_key
                     .exponent
-                    .map(|e| e.to_string())
+                    .map(|e| colors::number(e).to_string())
                     .unwrap_or_else(|| "(not an RSA certificate)".to_string()),
-                FieldName::Emails => cert.emails().join("\n"),
+                FieldName::Emails => cert
+                    .emails()
+                    .iter()
+                    .map(|e| colors::string(e).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 FieldName::San => {
                     if *json {
                         serde_json::to_string_pretty(&cert.san_entries())?
                     } else {
                         cert.san_entries()
                             .iter()
-                            .map(|e| e.to_string())
+                            .map(|e| colors::string(&e.to_string()).to_string())
                             .collect::<Vec<_>>()
                             .join(", ")
                     }
                 }
-                FieldName::OcspUrl => cert.ocsp_urls().join("\n"),
-                FieldName::KeyUsage => cert.key_usage().map(|u| u.join(", ")).unwrap_or_default(),
+                FieldName::OcspUrl => cert
+                    .ocsp_urls()
+                    .iter()
+                    .map(|u| colors::url(u).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                FieldName::KeyUsage => cert
+                    .key_usage()
+                    .map(|u| {
+                        u.iter()
+                            .map(|s| colors::string(s).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default(),
                 FieldName::ExtKeyUsage => cert
                     .ext_key_usage()
-                    .map(|u| u.join(", "))
+                    .map(|u| {
+                        u.iter()
+                            .map(|s| colors::string(s).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
                     .unwrap_or_default(),
                 FieldName::Extensions => {
                     if *json {
@@ -565,8 +996,12 @@ fn run() -> Result<()> {
                             .map(|e| {
                                 format!(
                                     "{}{}: {:?}",
-                                    e.name,
-                                    if e.critical { " [critical]" } else { "" },
+                                    colors::label(&e.name),
+                                    if e.critical {
+                                        format!(" {}", "[critical]".red())
+                                    } else {
+                                        String::new()
+                                    },
                                     e.value
                                 )
                             })
@@ -583,6 +1018,7 @@ fn run() -> Result<()> {
             file,
             der,
             pem,
+            json,
             failures_only,
             recurse,
         } => {
@@ -606,48 +1042,84 @@ fn run() -> Result<()> {
                     let check_value = value.clone();
                     let force_der = *der;
                     let force_pem = *pem;
-                    let failures = run_batch(&files, *failures_only, |f| {
-                        let label = f.display().to_string();
-                        let data = match std::fs::read(f) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                return vec![BatchResult {
-                                    path: label,
-                                    pass: false,
-                                    detail: format!("FAIL (read error: {})", e),
-                                }]
-                            }
-                        };
-                        let cert = match parse_input(&data, force_der, force_pem) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                return vec![BatchResult {
-                                    path: label,
-                                    pass: false,
-                                    detail: format!("FAIL (parse error: {})", e),
-                                }]
-                            }
-                        };
-                        let pass = match check_type {
-                            CheckType::Expiry => {
-                                xcert_lib::check_expiry(&cert, expiry_secs.unwrap_or(0))
-                            }
-                            CheckType::Host => xcert_lib::check_host(&cert, &check_value),
-                            CheckType::Email => xcert_lib::check_email(&cert, &check_value),
-                            CheckType::Ip => xcert_lib::check_ip(&cert, &check_value),
-                        };
-                        vec![BatchResult {
-                            path: label,
-                            pass,
-                            detail: if pass {
-                                "PASS".to_string()
-                            } else {
-                                "FAIL".to_string()
-                            },
-                        }]
-                    });
-                    if failures > 0 {
-                        std::process::exit(1);
+
+                    if *json {
+                        // JSON output mode
+                        let (output, failures) = run_batch_json(&files, |f| {
+                            let data = std::fs::read(f).map_err(|e| e.to_string())?;
+                            let cert = parse_input(&data, force_der, force_pem)
+                                .map_err(|e| e.to_string())?;
+                            let pass = match &check_type {
+                                CheckType::Expiry => {
+                                    xcert_lib::check_expiry(&cert, expiry_secs.unwrap_or(0))
+                                }
+                                CheckType::Host => xcert_lib::check_host(&cert, &check_value),
+                                CheckType::Email => xcert_lib::check_email(&cert, &check_value),
+                                CheckType::Ip => xcert_lib::check_ip(&cert, &check_value),
+                            };
+                            Ok(CheckResult {
+                                check: format!("{:?}", check_type).to_lowercase(),
+                                value: check_value.clone(),
+                                passed: pass,
+                            })
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output)?);
+                        if failures > 0 {
+                            std::process::exit(1);
+                        }
+                    } else {
+                        // Text output mode
+                        let failures = run_batch(&files, *failures_only, |f| {
+                            let label = f.display().to_string();
+                            let data = match std::fs::read(f) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    return vec![BatchResult {
+                                        path: label,
+                                        pass: false,
+                                        detail: format!(
+                                            "{} (read error: {})",
+                                            colors::fail("FAIL"),
+                                            e
+                                        ),
+                                    }]
+                                }
+                            };
+                            let cert = match parse_input(&data, force_der, force_pem) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    return vec![BatchResult {
+                                        path: label,
+                                        pass: false,
+                                        detail: format!(
+                                            "{} (parse error: {})",
+                                            colors::fail("FAIL"),
+                                            e
+                                        ),
+                                    }]
+                                }
+                            };
+                            let pass = match check_type {
+                                CheckType::Expiry => {
+                                    xcert_lib::check_expiry(&cert, expiry_secs.unwrap_or(0))
+                                }
+                                CheckType::Host => xcert_lib::check_host(&cert, &check_value),
+                                CheckType::Email => xcert_lib::check_email(&cert, &check_value),
+                                CheckType::Ip => xcert_lib::check_ip(&cert, &check_value),
+                            };
+                            vec![BatchResult {
+                                path: label,
+                                pass,
+                                detail: if pass {
+                                    colors::ok("PASS").to_string()
+                                } else {
+                                    colors::fail("FAIL").to_string()
+                                },
+                            }]
+                        });
+                        if failures > 0 {
+                            std::process::exit(1);
+                        }
                     }
                     return Ok(());
                 }
