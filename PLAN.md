@@ -260,15 +260,15 @@ resolved." The file documents closed issues appropriately.
 ### High Priority (Documentation Accuracy)
 
 1. [x] Review codebase structure and organization
-2. [ ] Update README.md test counts
-3. [ ] Update docs/design.md to reflect current implementation
-4. [ ] Remove stale PLAN.md content (previous phases are complete)
+2. [x] Update README.md test counts
+3. [x] Update docs/design.md to reflect current implementation
+4. [x] Remove stale PLAN.md content (previous phases are complete)
 
 ### Medium Priority (Enhancements)
 
-5. [ ] Add MSRV to Cargo.toml
-6. [ ] Add cargo-audit to CI
-7. [ ] Consider verify.rs submodule split
+5. [x] Add MSRV to Cargo.toml (rust-version = "1.74")
+6. [x] Add cargo-audit to CI
+7. [x] Split verify.rs into submodules (7 modules, ~300-400 lines each)
 
 ### Low Priority (Future Work)
 
@@ -280,32 +280,42 @@ resolved." The file documents closed issues appropriately.
 
 ## Completed Improvements (This Review)
 
-The following improvements were identified and should be addressed:
+### Documentation Updates (Completed)
 
-### Documentation Updates Needed
+1. README.md: Updated test counts to 217 integration tests, 240 total
+2. docs/design.md: Updated to reflect chain verification is implemented
+3. docs/design.md: Updated x509-parser version to 0.18
 
-1. README.md: Update test count from "210" / "155" to "217 integration tests"
-   and "240 total tests with external vectors"
+### Code Improvements (Completed)
 
-2. docs/design.md: Update to reflect that chain verification is fully
-   implemented (remove from non-goals, add verify command documentation)
+1. **verify.rs split into submodules** (7 files):
+   - `verify/mod.rs` - Public API, types, main verification logic (~350 lines)
+   - `verify/trust_store.rs` - TrustStore and CA bundle discovery (~230 lines)
+   - `verify/chain.rs` - DFS-based chain building (~100 lines)
+   - `verify/constraints.rs` - Name Constraints checking (~250 lines)
+   - `verify/crl.rs` - CRL parsing and revocation (~115 lines)
+   - `verify/webpki.rs` - WebPKI/CABF policy validation (~275 lines)
+   - `verify/checks.rs` - Individual verification checks (~590 lines)
+   - `verify/helpers.rs` - Extraction and matching utilities (~120 lines)
 
-3. docs/design.md: Update x509-parser version from 0.16 to 0.18
+2. **MSRV added**: `rust-version = "1.74"` in both crates
 
-### No Code Changes Required
+3. **cargo-audit added to CI**: New audit job for vulnerability scanning
 
-The code itself is high quality:
-- All tests pass
-- No clippy warnings
-- Proper formatting
-- Good security practices
-- Efficient implementation
+4. **MSRV compatibility fix**: Replaced `is_multiple_of()` with modulo operator
+
+### Verification
+
+- All 240 tests pass (217 integration + 15 pyca + 8 zlint)
+- Zero clippy warnings
+- Clean formatting
 
 ---
 
 ## Summary
 
 This codebase is well-engineered with strong security properties, comprehensive
-testing, and good performance. The main improvements needed are documentation
-updates to accurately reflect the current implementation state. No critical
-issues were found during this review.
+testing, and good performance. All high and medium priority improvements from
+this review have been implemented. Remaining items (AKI/SKI chain building,
+signature algorithm allowlist, DER crate migration) are low priority future
+enhancements.
