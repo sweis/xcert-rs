@@ -359,4 +359,31 @@ impl CertificateInfo {
             _ => None,
         })
     }
+
+    /// Return the EC curve name (e.g., "P-256"), if this is an EC certificate.
+    pub fn curve(&self) -> Option<&str> {
+        self.public_key.curve.as_deref()
+    }
+
+    /// Extract DNS names from the SAN extension.
+    pub fn dns_names(&self) -> Vec<&str> {
+        self.san_entries()
+            .into_iter()
+            .filter_map(|e| match e {
+                SanEntry::Dns(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Extract IP addresses from the SAN extension.
+    pub fn ip_addresses(&self) -> Vec<&str> {
+        self.san_entries()
+            .into_iter()
+            .filter_map(|e| match e {
+                SanEntry::Ip(ip) => Some(ip.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
 }
