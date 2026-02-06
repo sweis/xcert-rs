@@ -126,8 +126,11 @@ enum Commands {
                       \n  public-key     Subject public key in PEM format\
                       \n  modulus        RSA modulus in hex (RSA certificates only)\
                       \n  exponent       RSA public exponent (RSA certificates only)\
-                      \n  emails         Email addresses from subject and SAN\
-                      \n  san            Subject Alternative Names\
+                      \n  curve          EC named curve (EC certificates only, e.g. P-256)\
+                      \n  emails         Email addresses from subject DN and SAN extension\
+                      \n  dns-names      DNS names from SAN extension\
+                      \n  ip-addrs       IP addresses from SAN extension (IPv4 and IPv6)\
+                      \n  san            All Subject Alternative Name entries\
                       \n  ocsp-url       OCSP responder URL(s) from AIA extension\
                       \n  key-usage      Key Usage extension values\
                       \n  ext-key-usage  Extended Key Usage extension values\
@@ -136,6 +139,8 @@ enum Commands {
                       \n  xcert field subject cert.pem\
                       \n  xcert field fingerprint cert.pem\
                       \n  xcert field fingerprint --digest sha384 cert.pem\
+                      \n  xcert field curve cert.pem\
+                      \n  xcert field dns-names cert.pem\
                       \n  xcert field san --json cert.pem\
                       \n  xcert field serial /etc/ssl/certs/ --recurse --json\
                       \n  xcert field extensions --ext subjectAltName cert.pem\
@@ -323,7 +328,12 @@ enum FieldName {
     PublicKey,
     Modulus,
     Exponent,
+    Curve,
     Emails,
+    #[value(alias = "dns-names")]
+    DnsNames,
+    #[value(alias = "ip-addrs")]
+    IpAddrs,
     San,
     OcspUrl,
     KeyUsage,
@@ -455,10 +465,13 @@ struct JsonBatchOutput<T: Serialize> {
 }
 
 /// Summary statistics for batch operations.
+///
+/// `succeeded` = files processed without errors.
+/// `failed` = files that could not be read or parsed.
 #[derive(Serialize)]
 struct JsonBatchSummary {
     total: usize,
-    passed: usize,
+    succeeded: usize,
     failed: usize,
 }
 
@@ -492,14 +505,14 @@ where
         files.par_iter().map(|f| (f.clone(), op(f))).collect();
 
     let mut json_results = Vec::new();
-    let mut passed = 0;
+    let mut succeeded = 0;
     let mut failed = 0;
 
     for (path, result) in results {
         let path_str = path.display().to_string();
         match result {
             Ok(data) => {
-                passed += 1;
+                succeeded += 1;
                 json_results.push(JsonBatchResult {
                     file: path_str,
                     success: true,
@@ -522,8 +535,8 @@ where
     let output = JsonBatchOutput {
         results: json_results,
         summary: JsonBatchSummary {
-            total: passed + failed,
-            passed,
+            total: succeeded + failed,
+            succeeded,
             failed,
         },
     };
@@ -680,7 +693,13 @@ fn extract_field_value(
             .exponent
             .map(|e| e.to_string())
             .unwrap_or_else(|| "(not an RSA certificate)".to_string()),
+        FieldName::Curve => cert
+            .curve()
+            .unwrap_or("(not an EC certificate)")
+            .to_string(),
         FieldName::Emails => cert.emails().join(", "),
+        FieldName::DnsNames => cert.dns_names().join(", "),
+        FieldName::IpAddrs => cert.ip_addresses().join(", "),
         FieldName::San => cert
             .san_entries()
             .iter()
@@ -705,15 +724,19 @@ fn extract_field_value(
 /// Format a field value with colors based on field type.
 fn format_field_colored(field: &FieldName, value: &str) -> String {
     match field {
-        FieldName::Subject | FieldName::Issuer | FieldName::Emails | FieldName::San => {
-            colors::string(value).to_string()
-        }
+        FieldName::Subject
+        | FieldName::Issuer
+        | FieldName::Emails
+        | FieldName::DnsNames
+        | FieldName::IpAddrs
+        | FieldName::San => colors::string(value).to_string(),
         FieldName::Serial | FieldName::Fingerprint | FieldName::Modulus => {
             colors::hex(value).to_string()
         }
         FieldName::NotBefore | FieldName::NotAfter => colors::date(value).to_string(),
         FieldName::OcspUrl => colors::url(value).to_string(),
         FieldName::Exponent => colors::number(value).to_string(),
+        FieldName::Curve => colors::string(value).to_string(),
         FieldName::KeyUsage | FieldName::ExtKeyUsage | FieldName::Extensions => {
             colors::string(value).to_string()
         }
@@ -969,10 +992,30 @@ fn run() -> Result<()> {
                     .exponent
                     .map(|e| colors::number(e).to_string())
                     .unwrap_or_else(|| "(not an RSA certificate)".to_string()),
+                FieldName::Curve => {
+                    let val = cert.curve().unwrap_or("(not an EC certificate)");
+                    if val.starts_with('(') {
+                        val.to_string()
+                    } else {
+                        colors::string(val).to_string()
+                    }
+                }
                 FieldName::Emails => cert
                     .emails()
                     .iter()
                     .map(|e| colors::string(e).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                FieldName::DnsNames => cert
+                    .dns_names()
+                    .iter()
+                    .map(|n| colors::string(n).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                FieldName::IpAddrs => cert
+                    .ip_addresses()
+                    .iter()
+                    .map(|ip| colors::string(ip).to_string())
                     .collect::<Vec<_>>()
                     .join("\n"),
                 FieldName::San => {
