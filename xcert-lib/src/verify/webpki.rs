@@ -3,6 +3,7 @@
 //! Implements stricter validation rules for TLS server certificates
 //! as specified by the CA/Browser Forum Baseline Requirements.
 
+use crate::oid;
 use x509_parser::prelude::*;
 
 /// WebPKI-specific validation checks per CABF Baseline Requirements.
@@ -21,7 +22,7 @@ pub(crate) fn check_webpki_policy(
             let has_san = x509
                 .extensions()
                 .iter()
-                .any(|e| e.oid.to_id_string() == "2.5.29.17");
+                .any(|e| e.oid.to_id_string() == oid::EXT_SUBJECT_ALT_NAME);
             if !has_san {
                 errors.push(format!(
                     "WebPKI: leaf certificate ({}) has no SAN extension",
@@ -48,7 +49,7 @@ pub(crate) fn check_webpki_policy(
                 let eku_critical = x509
                     .extensions()
                     .iter()
-                    .find(|e| e.oid.to_id_string() == "2.5.29.37")
+                    .find(|e| e.oid.to_id_string() == oid::EXT_EXTENDED_KEY_USAGE)
                     .is_some_and(|e| e.critical);
                 if eku_critical {
                     errors.push(format!(
@@ -83,7 +84,7 @@ pub(crate) fn check_webpki_policy(
                 let san_critical = x509
                     .extensions()
                     .iter()
-                    .find(|e| e.oid.to_id_string() == "2.5.29.17")
+                    .find(|e| e.oid.to_id_string() == oid::EXT_SUBJECT_ALT_NAME)
                     .is_some_and(|e| e.critical);
                 if san_critical {
                     errors.push(format!(
@@ -106,7 +107,7 @@ pub(crate) fn check_webpki_policy(
                 for gn in &san.value.general_names {
                     if let GeneralName::DNSName(name) = gn {
                         if let Some(base) = name.strip_prefix("*.") {
-                            if is_public_suffix(base) {
+                            if is_single_label_tld(base) {
                                 errors.push(format!(
                                     "WebPKI: leaf certificate ({}) has wildcard on public suffix '{}'",
                                     subjects[i], name
@@ -119,7 +120,7 @@ pub(crate) fn check_webpki_policy(
 
             // WebPKI: Malformed AIA
             for ext in x509.extensions() {
-                if ext.oid.to_id_string() == "1.3.6.1.5.5.7.1.1"
+                if ext.oid.to_id_string() == oid::EXT_AUTHORITY_INFO_ACCESS
                     && x509_parser::extensions::AuthorityInfoAccess::from_der(ext.value).is_err()
                 {
                     errors.push(format!(
@@ -133,7 +134,7 @@ pub(crate) fn check_webpki_policy(
         // WebPKI: NC with empty subtrees is malformed
         if !is_leaf {
             for ext in x509.extensions() {
-                if ext.oid.to_id_string() == "2.5.29.30" {
+                if ext.oid.to_id_string() == oid::EXT_NAME_CONSTRAINTS {
                     if let Ok(Some(nc)) = x509.name_constraints() {
                         let permitted_empty = nc
                             .value
@@ -210,26 +211,14 @@ pub(crate) fn check_weak_crypto(cert: &X509Certificate) -> Option<String> {
 
     match algo_oid.as_str() {
         // DSA is forbidden in WebPKI
-        "1.2.840.10040.4.1" => Some("uses forbidden DSA key algorithm".into()),
+        oid::DSA => Some("uses forbidden DSA key algorithm".into()),
         // RSA
-        "1.2.840.113549.1.1.1" => {
+        oid::RSA_ENCRYPTION => {
             if let Ok(x509_parser::public_key::PublicKey::RSA(rsa)) = pk.parsed() {
-                let mod_bytes = rsa.modulus;
-                // Skip leading zero padding byte
-                let effective = mod_bytes
-                    .get(1..)
-                    .filter(|_| mod_bytes.first() == Some(&0))
-                    .unwrap_or(mod_bytes);
-                let key_bits = effective.len() * 8;
+                let key_bits = rsa_modulus_bits(rsa.modulus);
                 if key_bits < 2048 {
                     return Some(format!(
                         "has weak RSA key ({} bits, minimum 2048)",
-                        key_bits
-                    ));
-                }
-                if key_bits % 8 != 0 {
-                    return Some(format!(
-                        "has RSA key size not divisible by 8 ({} bits)",
                         key_bits
                     ));
                 }
@@ -237,12 +226,12 @@ pub(crate) fn check_weak_crypto(cert: &X509Certificate) -> Option<String> {
             None
         }
         // EC
-        "1.2.840.10045.2.1" => {
+        oid::EC_PUBLIC_KEY => {
             if let Some(params) = &pk.algorithm.parameters {
                 if let Ok(oid) = params.as_oid() {
                     let curve = oid.to_id_string();
                     // P-192 (secp192r1) is forbidden
-                    if curve == "1.2.840.10045.3.1.1" {
+                    if curve == oid::CURVE_P192 {
                         return Some("uses forbidden P-192 elliptic curve".into());
                     }
                 }
@@ -253,9 +242,32 @@ pub(crate) fn check_weak_crypto(cert: &X509Certificate) -> Option<String> {
     }
 }
 
-/// Simple public suffix check for wildcard SAN validation.
-/// Returns true if the domain is a TLD (single label with no dots).
-pub(crate) fn is_public_suffix(domain: &str) -> bool {
+/// Count the number of significant bits in a DER-encoded RSA modulus.
+///
+/// DER INTEGER encoding may include a leading zero byte to keep the value
+/// positive. This function strips all leading zero bytes and counts the
+/// remaining significant bits accurately.
+fn rsa_modulus_bits(modulus: &[u8]) -> usize {
+    // Strip all leading zero bytes
+    let effective = modulus
+        .iter()
+        .position(|&b| b != 0)
+        .and_then(|pos| modulus.get(pos..))
+        .unwrap_or(&[]);
+    // Count: (remaining full bytes - 1) * 8 + significant bits in first byte
+    match effective.first() {
+        Some(&first) => (effective.len() - 1) * 8 + (8 - first.leading_zeros() as usize),
+        None => 0,
+    }
+}
+
+/// Check if a domain is a single-label TLD (no dots).
+///
+/// This is a lightweight heuristic for wildcard SAN validation. It catches
+/// wildcards like `*.com` or `*.org` but does **not** cover multi-level
+/// public suffixes such as `co.uk` or `com.au`. A full Public Suffix List
+/// implementation would require an external dependency or embedded data.
+pub(crate) fn is_single_label_tld(domain: &str) -> bool {
     !domain.contains('.')
 }
 
@@ -270,11 +282,11 @@ pub(crate) fn webpki_check_root_aki(
     let aki_ext = root_x509
         .extensions()
         .iter()
-        .find(|e| e.oid.to_id_string() == "2.5.29.35");
+        .find(|e| e.oid.to_id_string() == oid::EXT_AUTHORITY_KEY_ID);
     let ski_ext = root_x509
         .extensions()
         .iter()
-        .find(|e| e.oid.to_id_string() == "2.5.29.14");
+        .find(|e| e.oid.to_id_string() == oid::EXT_SUBJECT_KEY_ID);
 
     if let Some(ext) = aki_ext {
         if let ParsedExtension::AuthorityKeyIdentifier(aki) = ext.parsed_extension() {

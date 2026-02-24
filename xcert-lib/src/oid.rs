@@ -38,9 +38,11 @@ pub const ED448: &str = "1.3.101.113";
 
 pub const RSA_ENCRYPTION: &str = "1.2.840.113549.1.1.1";
 pub const EC_PUBLIC_KEY: &str = "1.2.840.10045.2.1";
+pub const DSA: &str = "1.2.840.10040.4.1";
 
 // ── Named elliptic curves ────────────────────────────────────────────────
 
+pub const CURVE_P192: &str = "1.2.840.10045.3.1.1";
 pub const CURVE_P256: &str = "1.2.840.10045.3.1.7";
 pub const CURVE_P384: &str = "1.3.132.0.34";
 pub const CURVE_P521: &str = "1.3.132.0.35";
@@ -52,6 +54,7 @@ pub const EXT_KEY_USAGE: &str = "2.5.29.15";
 pub const EXT_SUBJECT_ALT_NAME: &str = "2.5.29.17";
 pub const EXT_ISSUER_ALT_NAME: &str = "2.5.29.18";
 pub const EXT_BASIC_CONSTRAINTS: &str = "2.5.29.19";
+pub const EXT_CRL_NUMBER: &str = "2.5.29.20";
 pub const EXT_NAME_CONSTRAINTS: &str = "2.5.29.30";
 pub const EXT_CRL_DISTRIBUTION_POINTS: &str = "2.5.29.31";
 pub const EXT_CERTIFICATE_POLICIES: &str = "2.5.29.32";

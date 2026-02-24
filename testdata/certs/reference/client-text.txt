@@ -5,31 +5,31 @@ Certificate:
         Signature Algorithm: sha256WithRSAEncryption
         Issuer: C = US, ST = California, O = Test PKI, OU = Intermediate Authority, CN = Test Intermediate CA
         Validity
-            Not Before: Feb  4 06:32:17 2026 GMT
-            Not After : Feb  4 06:32:17 2101 GMT
+            Not Before: Feb 24 22:17:11 2026 GMT
+            Not After : Feb 24 22:17:11 2101 GMT
         Subject: C = US, ST = New York, O = Client Organization, CN = client@example.com
         Subject Public Key Info:
             Public Key Algorithm: rsaEncryption
                 Public-Key: (2048 bit)
                 Modulus:
-                    00:c5:f5:a3:a1:bc:33:bb:c4:94:75:e4:4f:1c:7d:
-                    9f:79:69:99:b8:90:49:4f:e3:e7:5d:73:f7:88:94:
-                    5c:33:09:c6:b0:f9:68:e9:29:a8:43:8a:0f:c4:19:
-                    21:91:a7:d9:76:54:5d:e6:64:4d:6f:b2:38:21:16:
-                    43:ba:50:1a:a3:23:51:57:dd:c3:09:e5:af:cf:2b:
-                    83:2c:24:02:44:0b:60:9d:cb:fd:62:63:5c:49:e3:
-                    31:7a:96:43:c6:2d:69:8c:5d:20:bd:31:e9:26:b1:
-                    11:e4:89:13:ed:1b:4c:45:87:27:9c:a8:93:cd:b2:
-                    37:6e:50:02:fa:63:b7:76:6d:67:d5:8a:51:fd:69:
-                    a6:09:bb:de:4a:a9:09:2a:b2:3e:16:a4:11:92:43:
-                    6e:41:68:9d:2a:ee:59:f6:d4:a5:06:05:e3:62:5e:
-                    24:17:96:d7:73:b9:0f:49:35:44:26:2d:dc:dd:f6:
-                    26:69:5a:6f:dd:37:80:87:b0:85:75:a9:dd:1f:db:
-                    0e:d0:97:de:19:c2:9c:0a:62:e2:09:ba:6a:7c:ec:
-                    9f:05:a0:3e:d4:c2:a6:77:ec:c4:09:29:4c:02:8f:
-                    32:91:90:ec:f1:50:d4:13:e3:26:b4:b4:fb:e8:a1:
-                    75:8d:f8:e9:03:37:30:5d:f8:c6:9c:8c:e7:11:fd:
-                    ed:bf
+                    00:bb:b8:44:09:d3:5d:65:4a:8b:e4:e9:c7:dd:cf:
+                    c7:10:6a:dd:26:d0:95:df:44:41:03:b8:7b:ba:5b:
+                    84:a2:6b:d0:39:99:4c:b4:29:a6:86:08:39:b1:2a:
+                    cd:9d:df:f2:c7:1f:41:db:26:90:b3:9a:4c:c4:38:
+                    9f:07:c2:41:c8:87:87:5b:aa:77:c6:09:6b:9f:91:
+                    c5:37:38:34:3d:d5:51:1d:fe:d9:af:d4:5d:26:2f:
+                    f2:6d:61:0a:84:1c:d5:12:4b:c1:50:2e:40:11:cc:
+                    e9:ea:fe:c9:b4:cd:ec:f9:50:47:15:6d:92:00:ae:
+                    a0:c8:c7:ae:d9:9a:fe:7d:c7:08:63:9c:ef:9a:db:
+                    83:da:20:27:95:04:35:2f:65:76:42:b7:bf:e8:d4:
+                    79:ae:63:94:fa:10:fa:2c:fb:93:57:79:d4:63:df:
+                    8c:37:a6:b0:cf:6a:8b:f5:a4:6d:11:d7:01:ca:7e:
+                    c0:71:c4:1f:55:14:28:b9:7a:8b:f1:da:80:7a:0b:
+                    b1:e2:43:03:4a:8f:d4:b6:77:e1:1a:38:e5:29:90:
+                    01:aa:fc:a8:56:e8:32:ae:3f:ee:a5:ad:69:ea:86:
+                    b8:f8:63:86:ad:b6:d2:ab:04:19:09:0f:e2:01:b4:
+                    76:31:13:c3:a9:8d:06:c6:2e:e1:f3:95:62:ee:ea:
+                    e2:57
                 Exponent: 65537 (0x10001)
         X509v3 extensions:
             X509v3 Basic Constraints: 
@@ -39,25 +39,25 @@ Certificate:
             X509v3 Extended Key Usage: 
                 TLS Web Client Authentication, E-mail Protection
             X509v3 Subject Key Identifier: 
-                62:7B:E3:A6:38:DD:E7:8A:7A:11:9C:DE:9A:BC:88:68:69:7B:43:66
+                4D:D7:70:6F:14:D5:42:87:2B:87:5F:41:FC:D3:FC:92:57:E5:0E:FE
             X509v3 Authority Key Identifier: 
-                53:92:7B:D6:7B:58:80:E7:AE:96:70:E9:95:E8:5C:CD:B8:52:8A:99
+                7C:37:9A:DB:EC:FE:AB:30:79:11:32:F5:E3:A2:64:FB:5C:B5:DE:18
             X509v3 Subject Alternative Name: 
                 email:client@example.com
     Signature Algorithm: sha256WithRSAEncryption
     Signature Value:
-        25:08:1d:f6:d2:e8:70:9f:cd:7d:a9:f5:2a:8b:38:77:1a:d5:
-        ae:79:f9:5a:e1:1d:57:6f:b2:c9:b7:20:d3:39:38:8c:9b:de:
-        d5:79:d4:1c:33:80:df:fc:01:52:0c:ba:e0:79:93:68:03:f9:
-        08:c2:d8:81:fb:5c:c1:75:a8:3d:e1:58:73:af:5e:72:93:c3:
-        a2:e6:be:22:2a:4e:6b:03:5c:75:89:73:bf:d7:ff:ad:e1:48:
-        44:d8:44:8e:a3:77:cd:dc:41:ba:a4:f3:69:80:c8:c2:d5:7e:
-        d9:61:b7:0d:aa:df:41:2f:79:0c:ba:a0:9c:61:46:93:15:b3:
-        63:d5:56:97:e3:6c:cc:f8:69:08:64:40:53:88:23:03:0e:18:
-        b1:e2:b6:0e:63:7f:c3:b8:9b:b0:fc:34:37:51:90:07:02:3d:
-        b5:35:dc:21:80:90:17:15:9c:af:10:f7:cd:51:d4:eb:c9:d2:
-        99:18:19:4f:3a:a8:54:9c:ca:cf:f6:f3:eb:a4:3b:ce:b1:0a:
-        79:0a:2e:76:69:91:ed:7c:96:be:2d:7b:74:f6:22:5f:0e:63:
-        bb:ea:4e:a0:77:e4:c0:26:83:77:15:f4:5b:2d:ad:76:6e:c7:
-        54:06:51:73:85:fb:51:41:dc:83:7b:17:6a:bf:7e:4a:a3:1f:
-        f9:97:48:7b
+        5d:ee:48:7b:a8:1c:60:4b:8d:76:42:ef:a8:c7:1f:14:f6:44:
+        4f:ae:fc:2e:54:9f:7f:1e:f3:b3:a7:1e:bc:23:2e:ed:28:62:
+        bd:ef:60:d7:74:47:82:c4:67:c5:d7:9e:fb:25:a6:2c:67:a4:
+        b5:a2:5b:e5:57:e1:2e:45:e9:3a:17:b3:fd:40:9a:c1:d4:1e:
+        e1:c8:6e:a3:ba:c0:83:74:4c:13:4e:54:b8:15:03:e7:34:9d:
+        d6:e1:d4:9e:b7:0a:59:b4:41:96:13:91:e0:17:57:9c:48:d8:
+        c2:0f:ab:b0:2e:c8:af:e7:b1:d7:c6:d5:9e:8b:fa:8f:6e:6e:
+        bf:13:d0:0f:3c:0a:05:06:dd:5e:a2:cf:11:44:d1:8c:e5:58:
+        01:f4:1b:21:e8:84:12:31:51:aa:35:99:d5:55:bf:8f:74:8d:
+        72:38:49:76:54:cf:c8:cb:e6:42:e4:30:27:48:cb:de:86:4f:
+        8d:3a:82:fc:6e:0d:dd:76:42:00:4e:7a:e9:30:dd:a3:63:8a:
+        90:cb:3e:1e:f7:7f:28:0b:7a:87:57:4e:74:13:49:a5:e4:db:
+        1f:56:53:fd:c8:37:6a:0e:9f:78:e3:c2:7f:9d:d3:12:82:cb:
+        4b:23:d7:1e:0b:55:70:49:b0:7f:68:32:4f:65:e0:60:72:27:
+        3b:a1:35:58

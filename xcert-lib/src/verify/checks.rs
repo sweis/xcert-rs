@@ -229,7 +229,7 @@ pub(crate) fn check_chain_rfc5280_strict(
         let aki_ext = x509
             .extensions()
             .iter()
-            .find(|e| e.oid.to_id_string() == "2.5.29.35");
+            .find(|e| e.oid.to_id_string() == oid::EXT_AUTHORITY_KEY_ID);
         if !self_signed && aki_ext.is_none() {
             errors.push(format!(
                 "certificate at depth {} ({}) is missing Authority Key Identifier",
@@ -250,7 +250,7 @@ pub(crate) fn check_chain_rfc5280_strict(
         let ski_ext = x509
             .extensions()
             .iter()
-            .find(|e| e.oid.to_id_string() == "2.5.29.14");
+            .find(|e| e.oid.to_id_string() == oid::EXT_SUBJECT_KEY_ID);
         if !is_leaf && ski_ext.is_none() {
             errors.push(format!(
                 "certificate at depth {} ({}) is a CA but missing Subject Key Identifier",
@@ -290,7 +290,7 @@ pub(crate) fn check_chain_rfc5280_strict(
             let san_ext = x509
                 .extensions()
                 .iter()
-                .find(|e| e.oid.to_id_string() == "2.5.29.17");
+                .find(|e| e.oid.to_id_string() == oid::EXT_SUBJECT_ALT_NAME);
             match san_ext {
                 Some(ext) if !ext.critical => {
                     errors.push(format!(
@@ -310,7 +310,7 @@ pub(crate) fn check_chain_rfc5280_strict(
 
         // RFC 5280 Section 4.2.2.1: AIA MUST be non-critical.
         for ext in x509.extensions() {
-            if ext.oid.to_id_string() == "1.3.6.1.5.5.7.1.1" && ext.critical {
+            if ext.oid.to_id_string() == oid::EXT_AUTHORITY_INFO_ACCESS && ext.critical {
                 errors.push(format!(
                     "certificate at depth {} ({}) has Authority Information Access marked critical",
                     i, subjects[i]
@@ -320,7 +320,7 @@ pub(crate) fn check_chain_rfc5280_strict(
 
         // RFC 5280 Section 4.2.1.11: Policy Constraints MUST be critical.
         for ext in x509.extensions() {
-            if ext.oid.to_id_string() == "2.5.29.36" && !ext.critical {
+            if ext.oid.to_id_string() == oid::EXT_POLICY_CONSTRAINTS && !ext.critical {
                 errors.push(format!(
                     "certificate at depth {} ({}) has Policy Constraints not marked critical",
                     i, subjects[i]
@@ -502,7 +502,7 @@ pub(crate) fn check_trusted_root(
             let bc_critical = root_x509
                 .extensions()
                 .iter()
-                .find(|e| e.oid.to_id_string() == "2.5.29.19")
+                .find(|e| e.oid.to_id_string() == oid::EXT_BASIC_CONSTRAINTS)
                 .is_some_and(|e| e.critical);
             if !bc_critical {
                 errors.push(format!(
@@ -523,7 +523,7 @@ pub(crate) fn check_trusted_root(
     let root_has_ski = root_x509
         .extensions()
         .iter()
-        .any(|e| e.oid.to_id_string() == "2.5.29.14");
+        .any(|e| e.oid.to_id_string() == oid::EXT_SUBJECT_KEY_ID);
     if !root_has_ski {
         errors.push(format!(
             "trusted root ({}) is missing Subject Key Identifier",
@@ -703,7 +703,7 @@ pub(crate) fn check_crl_strict(options: &VerifyOptions, errors: &mut Vec<String>
             let crl_number_ext = crl
                 .extensions()
                 .iter()
-                .find(|e| e.oid.to_id_string() == "2.5.29.20");
+                .find(|e| e.oid.to_id_string() == oid::EXT_CRL_NUMBER);
             match crl_number_ext {
                 Some(ext) if ext.critical => {
                     errors.push("CRL has CRL Number extension marked critical".to_string());

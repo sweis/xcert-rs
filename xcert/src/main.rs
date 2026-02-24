@@ -661,6 +661,20 @@ fn print_verify_result(
     Ok(())
 }
 
+/// Parse a digest algorithm name to the library enum.
+fn parse_digest(name: &str) -> Result<xcert_lib::DigestAlgorithm> {
+    match name {
+        "sha256" => Ok(xcert_lib::DigestAlgorithm::Sha256),
+        "sha384" => Ok(xcert_lib::DigestAlgorithm::Sha384),
+        "sha512" => Ok(xcert_lib::DigestAlgorithm::Sha512),
+        "sha1" => Ok(xcert_lib::DigestAlgorithm::Sha1),
+        _ => anyhow::bail!(
+            "Unsupported digest: {}. Use sha256, sha384, sha512, or sha1.",
+            name
+        ),
+    }
+}
+
 /// Extract a field value from a certificate (plain string, no colors).
 fn extract_field_value(
     cert: &xcert_lib::CertificateInfo,
@@ -674,13 +688,7 @@ fn extract_field_value(
         FieldName::NotBefore => cert.not_before_string(),
         FieldName::NotAfter => cert.not_after_string(),
         FieldName::Fingerprint => {
-            let alg = match digest {
-                "sha256" => xcert_lib::DigestAlgorithm::Sha256,
-                "sha384" => xcert_lib::DigestAlgorithm::Sha384,
-                "sha512" => xcert_lib::DigestAlgorithm::Sha512,
-                "sha1" => xcert_lib::DigestAlgorithm::Sha1,
-                _ => return Err(format!("Unsupported digest: {}", digest)),
-            };
+            let alg = parse_digest(digest).map_err(|e| e.to_string())?;
             cert.fingerprint(alg)
         }
         FieldName::PublicKey => cert.public_key_pem().to_string(),
@@ -966,16 +974,7 @@ fn run() -> Result<()> {
                 FieldName::NotBefore => colors::date(&cert.not_before_string()).to_string(),
                 FieldName::NotAfter => colors::date(&cert.not_after_string()).to_string(),
                 FieldName::Fingerprint => {
-                    let alg = match digest.as_str() {
-                        "sha256" => xcert_lib::DigestAlgorithm::Sha256,
-                        "sha384" => xcert_lib::DigestAlgorithm::Sha384,
-                        "sha512" => xcert_lib::DigestAlgorithm::Sha512,
-                        "sha1" => xcert_lib::DigestAlgorithm::Sha1,
-                        _ => anyhow::bail!(
-                            "Unsupported digest: {}. Use sha256, sha384, sha512, or sha1.",
-                            digest
-                        ),
-                    };
+                    let alg = parse_digest(digest)?;
                     colors::hex(&cert.fingerprint(alg)).to_string()
                 }
                 FieldName::PublicKey => cert.public_key_pem().to_string(),
