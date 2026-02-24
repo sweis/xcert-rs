@@ -75,6 +75,6 @@ chain: `env_var.into_iter().chain(probe_dirs).chain(known_dirs)`.
 | fingerprint.rs | 100.00% | |
 | parser.rs | 86.12% | Error paths, Ed448, unknown OIDs |
 | util.rs | 98.53% | |
-| verify.rs | 82.18% | Partial chain, CRL edge cases |
+| verify/ (all) | 82.18% | Split into chain, checks, constraints, crl, helpers, trust_store, webpki |
 | main.rs | 25.62% | CLI binary; integration tests run externally |
 | **TOTAL** | **69.55%** | Library avg ~91%; main.rs drags total down |

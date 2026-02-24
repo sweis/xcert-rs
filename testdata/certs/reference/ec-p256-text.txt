@@ -5,18 +5,18 @@ Certificate:
         Signature Algorithm: sha256WithRSAEncryption
         Issuer: C = US, ST = California, L = San Francisco, O = Test PKI, OU = Certificate Authority, CN = Test Root CA
         Validity
-            Not Before: Feb  4 06:32:17 2026 GMT
-            Not After : Feb  4 06:32:17 2101 GMT
+            Not Before: Feb 24 22:17:11 2026 GMT
+            Not After : Feb 24 22:17:11 2101 GMT
         Subject: C = DE, ST = Bavaria, L = Munich, O = EC Test Corp, CN = ec-test.example.com
         Subject Public Key Info:
             Public Key Algorithm: id-ecPublicKey
                 Public-Key: (256 bit)
                 pub:
-                    04:47:6a:14:f1:22:e4:f7:42:f6:d7:b1:1b:2e:72:
-                    0f:ef:ed:2b:31:c8:bd:6e:ba:e9:38:c3:30:2c:80:
-                    a3:53:5c:d5:9b:b1:28:f8:31:d3:66:00:74:f3:27:
-                    09:12:91:a1:3b:ff:f9:df:e5:8e:f6:5a:be:46:2c:
-                    94:e6:e4:b1:68
+                    04:ee:d0:f4:bc:d2:60:93:98:25:7c:28:77:8f:39:
+                    fc:bf:38:1c:af:a9:c7:15:e8:85:29:54:0f:a8:f9:
+                    8a:64:8d:b5:77:b1:b0:88:89:22:77:0e:19:65:73:
+                    da:45:19:aa:79:21:cc:88:0d:2f:1b:68:f2:25:34:
+                    b2:17:5a:02:da
                 ASN1 OID: prime256v1
                 NIST CURVE: P-256
         X509v3 extensions:
@@ -27,25 +27,25 @@ Certificate:
             X509v3 Extended Key Usage: 
                 TLS Web Server Authentication, TLS Web Client Authentication
             X509v3 Subject Key Identifier: 
-                7C:4F:9C:F7:55:47:75:8C:AB:78:05:D3:13:31:7B:16:DC:09:FA:DB
+                B0:92:42:AF:7C:34:31:5D:61:22:02:CE:4B:B8:48:1B:D8:32:BD:D6
             X509v3 Subject Alternative Name: 
                 DNS:ec-test.example.com
             X509v3 Authority Key Identifier: 
-                50:0E:FC:2B:84:B4:AB:50:6F:33:ED:E5:52:C1:00:63:0C:84:09:F3
+                DD:42:6E:6A:E9:0F:48:A5:15:50:57:EF:B8:6D:46:BF:AF:65:50:EC
     Signature Algorithm: sha256WithRSAEncryption
     Signature Value:
-        77:54:b8:c6:27:be:2a:c4:bb:22:2c:fd:86:4d:bc:65:4e:68:
-        06:3b:9e:57:eb:96:cd:91:9f:1c:e6:0e:56:1c:bd:a8:35:64:
-        74:4c:68:75:9a:d3:21:1f:39:62:72:ac:f5:c1:99:c3:73:37:
-        56:45:d0:be:aa:08:32:78:26:ff:fa:34:24:22:97:c8:7d:a9:
-        a6:8f:40:9a:5a:aa:7a:1e:8e:2b:3c:80:1d:1a:bf:33:66:ba:
-        20:31:01:dc:06:24:73:2c:7f:ba:39:0b:92:70:35:ba:c4:c7:
-        3b:ff:b7:fb:09:23:23:94:94:a1:06:b4:da:29:11:3a:1c:7b:
-        be:4a:4c:69:9e:38:67:e6:7b:b8:b3:ee:df:48:35:3a:d5:f8:
-        e2:ec:00:32:bc:d5:21:50:6f:74:ff:12:7c:87:a8:84:f9:b9:
-        ac:4e:c2:2e:b8:55:57:15:49:be:9b:1a:34:a5:58:74:f3:5a:
-        a9:93:85:a3:a7:9b:de:63:4e:ec:25:7a:e7:00:5c:ed:29:80:
-        b4:b4:b1:42:a3:df:bd:04:9f:de:a8:d2:ff:0d:07:17:e0:5a:
-        de:56:75:b2:88:51:1f:38:58:c5:cf:df:8e:17:82:e4:6f:d8:
-        88:4f:12:bb:a5:52:6b:27:c3:ec:55:f0:3e:09:3d:32:d9:9e:
-        57:43:3f:f9
+        6d:49:76:cd:ee:a2:64:0b:c0:91:0b:36:85:df:e6:ce:cf:a2:
+        ae:36:f0:fc:16:65:79:88:d2:99:45:04:2a:29:97:4d:6b:70:
+        27:a9:19:c8:ec:d5:7e:db:3a:1c:71:8c:f9:74:01:f3:fc:7f:
+        01:8a:a6:61:68:60:80:89:96:ba:de:b3:46:a0:85:63:b8:60:
+        f2:ef:f9:b6:07:6a:aa:3f:7b:2d:90:08:0c:9a:67:0b:09:04:
+        59:26:4b:fa:d6:67:09:a8:5b:ac:38:08:7b:45:42:fa:1b:e9:
+        0e:ad:05:45:af:ce:aa:eb:2a:a6:0e:ce:e5:62:21:8c:ab:e8:
+        90:65:80:f2:8e:12:8f:03:ca:15:25:23:06:40:dc:10:ad:77:
+        ae:25:2a:42:64:c3:ea:b6:1b:8f:0c:63:57:fc:fa:4b:29:00:
+        de:d9:b6:91:b2:9e:59:27:e3:a2:cb:41:05:76:b6:f7:6b:e6:
+        dc:8d:85:72:c7:6e:ca:e7:e4:bd:d7:41:08:bf:45:5a:79:6c:
+        29:f3:64:ca:03:d3:44:d8:72:54:25:c7:9c:5e:ae:d1:ae:43:
+        76:f0:f7:6d:af:16:3c:54:02:3c:45:4f:21:da:bc:79:74:bc:
+        9d:2c:db:8c:d5:38:d6:49:dc:ae:aa:56:36:c9:55:bf:1a:07:
+        20:01:00:74

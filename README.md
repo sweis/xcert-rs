@@ -4,6 +4,48 @@
 
 A fast, memory-safe command-line tool for inspecting X.509 certificates. Read-only alternative to `openssl x509` with JSON output and colored terminal display.
 
+## Quick Start
+
+```bash
+# Build
+cargo build --release
+
+# Generate a test certificate (or use any .pem/.der file you have)
+openssl req -x509 -newkey rsa:2048 -keyout /dev/null -out test.pem \
+  -days 365 -nodes -subj "/CN=example.com"
+
+# Inspect it
+target/release/xcert show test.pem
+```
+
+Example output:
+
+```
+Certificate:
+  Version: 3 (0x2)
+  Serial: 10:00
+  Signature Algorithm: sha256WithRSAEncryption
+  Issuer: C = US, ST = California, O = Test PKI, CN = Test Intermediate CA
+  Validity:
+    Not Before: Feb 24 22:17:10 2026 GMT
+    Not After:  Feb 24 22:17:10 2101 GMT
+  Subject: C = US, ST = California, L = San Francisco, O = Example Corp, CN = www.example.com
+  Public Key:
+    Algorithm: RSA (2048 bit)
+    Exponent: 65537 (0x10001)
+  Extensions:
+    Basic Constraints: CA=false
+    Key Usage: [critical] Digital Signature, Key Encipherment
+    Extended Key Usage: TLS Web Server Authentication
+    Subject Alternative Name:
+      DNS: www.example.com
+      DNS: example.com
+      Email: admin@example.com
+    Authority Information Access:
+      OCSP: http://ocsp.example.com
+  Fingerprint (SHA-256): E8:74:48:2A:8B:AA:...
+```
+
 ## Installation
 
 ```bash
@@ -35,13 +77,22 @@ xcert show /etc/ssl/certs/ --recurse
 
 ```bash
 xcert field subject cert.pem
+# Output: C = US, ST = California, O = Example Corp, CN = www.example.com
+
 xcert field serial cert.pem
-xcert field not-after cert.pem
+# Output: 10:00
+
 xcert field fingerprint cert.pem
+# Output: E8:74:48:2A:8B:AA:E7:36:9D:5B:51:2A:60:12:34:29:...
+
+xcert field dns-names cert.pem
+# Output:
+# www.example.com
+# example.com
+# *.example.com
+
 xcert field fingerprint --digest sha384 cert.pem
-xcert field curve cert.pem            # EC curve name (e.g. P-256)
-xcert field dns-names cert.pem        # DNS names from SAN
-xcert field ip-addrs cert.pem         # IP addresses from SAN
+xcert field curve ec-cert.pem         # EC curve name (e.g. P-256)
 xcert field san --json cert.pem
 xcert field public-key cert.pem
 
@@ -79,14 +130,21 @@ Returns exit code 0 for pass, 1 for fail.
 
 ```bash
 xcert check expiry 30d cert.pem     # Valid for 30+ days?
-xcert check expiry 1w cert.pem      # Valid for 1+ week?
-xcert check host example.com cert.pem
+# (exit code 0 = yes, 1 = no)
+
+xcert check host www.example.com cert.pem
+# (exit code 0 = matches, 1 = no match)
+
 xcert check email user@example.com cert.pem
 xcert check ip 93.184.216.34 cert.pem
 
+# Use in scripts:
+if xcert check expiry 7d cert.pem; then
+  echo "Certificate is valid for at least 7 more days"
+fi
+
 # Bulk: check all certs in a directory
 xcert check expiry 30d /etc/ssl/certs/
-xcert check expiry 30d /etc/ssl/certs/ --json
 xcert check expiry 7d --failures-only /etc/ssl/certs/
 ```
 
@@ -106,6 +164,8 @@ Units: `s`, `m`/`min`, `h`/`hr`, `d`/`day`, `w`/`week`, `month`, `y`/`year`.
 
 ```bash
 xcert verify chain.pem
+# Output: chain.pem: OK, www.example.com, 10:00
+
 xcert verify --hostname example.com chain.pem
 xcert verify --CAfile ca.pem chain.pem
 xcert verify --untrusted intermediates.pem leaf.pem
@@ -141,7 +201,7 @@ Options:
 ### Convert between formats
 
 ```bash
-xcert convert cert.pem cert.der     # PEM to DER
+xcert convert cert.pem cert.der     # PEM to DER (format inferred from extension)
 xcert convert cert.der cert.pem     # DER to PEM
 xcert convert cert.pem --to der     # Explicit format (stdout)
 ```

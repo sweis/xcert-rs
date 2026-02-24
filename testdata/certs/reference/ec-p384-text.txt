@@ -5,20 +5,20 @@ Certificate:
         Signature Algorithm: sha384WithRSAEncryption
         Issuer: C = US, ST = California, L = San Francisco, O = Test PKI, OU = Certificate Authority, CN = Test Root CA
         Validity
-            Not Before: Feb  4 06:32:17 2026 GMT
-            Not After : Feb  4 06:32:17 2101 GMT
+            Not Before: Feb 24 22:17:11 2026 GMT
+            Not After : Feb 24 22:17:11 2101 GMT
         Subject: C = JP, O = EC P384 Test, CN = ec384.example.com
         Subject Public Key Info:
             Public Key Algorithm: id-ecPublicKey
                 Public-Key: (384 bit)
                 pub:
-                    04:23:2f:38:cb:e8:e3:a7:68:23:4a:95:37:e9:28:
-                    ff:c4:9e:b7:11:34:11:a8:e9:bf:16:5a:22:04:8e:
-                    56:70:06:23:45:07:bb:a2:94:b6:9d:bd:d2:67:51:
-                    b3:f5:8e:a0:d6:ea:f6:23:bd:c8:fd:4d:69:87:d7:
-                    12:3e:5e:49:b0:2f:71:ad:34:07:53:d8:0c:ab:86:
-                    2c:cf:0f:d1:97:42:6a:d5:81:27:0b:86:c1:ea:0c:
-                    8b:16:5a:1d:5b:ad:c8
+                    04:08:17:3c:f5:03:b0:e8:bc:ab:25:b1:f1:ee:f4:
+                    72:6c:46:53:92:e5:4d:35:3f:61:3f:8a:15:13:b9:
+                    82:11:ef:3d:38:85:f4:15:f5:7c:74:97:50:29:43:
+                    9d:7d:4c:dd:e8:df:83:18:f1:36:d9:2e:1c:0c:93:
+                    3d:5f:57:b3:41:17:34:16:32:0a:30:99:79:39:30:
+                    7d:53:a4:3d:8a:d4:c9:df:10:66:ed:dc:33:38:7a:
+                    9a:3b:62:40:33:15:91
                 ASN1 OID: secp384r1
                 NIST CURVE: P-384
         X509v3 extensions:
@@ -29,25 +29,25 @@ Certificate:
             X509v3 Extended Key Usage: 
                 TLS Web Server Authentication
             X509v3 Subject Key Identifier: 
-                04:8F:3A:36:1F:D5:00:48:E9:D0:5A:A9:65:47:0D:73:D6:EC:9D:93
+                DB:DE:54:9B:78:C3:02:DB:DE:66:AC:3E:87:69:28:08:0B:94:0B:9A
             X509v3 Subject Alternative Name: 
                 DNS:ec384.example.com
             X509v3 Authority Key Identifier: 
-                50:0E:FC:2B:84:B4:AB:50:6F:33:ED:E5:52:C1:00:63:0C:84:09:F3
+                DD:42:6E:6A:E9:0F:48:A5:15:50:57:EF:B8:6D:46:BF:AF:65:50:EC
     Signature Algorithm: sha384WithRSAEncryption
     Signature Value:
-        43:c0:6a:c2:cd:a2:43:6c:ec:e6:a9:05:a5:31:91:b9:96:dd:
-        25:0a:bd:80:1a:b7:dc:fb:6b:3c:38:0c:03:5e:3e:87:da:90:
-        a7:9b:ce:65:f1:c7:be:f3:99:a0:32:b7:e9:04:dc:6c:a6:5b:
-        68:ce:6a:ce:06:5a:54:91:ee:5d:14:a2:de:c2:38:29:65:62:
-        e1:82:25:cc:a7:53:b1:90:e0:8c:33:85:fc:64:47:00:50:07:
-        a5:a3:4a:89:30:12:d0:f0:ef:ec:f5:dd:03:83:04:3b:d2:de:
-        bf:bf:0b:37:41:78:de:5a:f0:a9:ea:bc:f4:fc:04:b7:46:e7:
-        d3:5f:a2:cc:1f:76:20:cd:09:4d:af:e2:07:0a:dd:23:84:d9:
-        a6:32:9a:46:22:1a:b6:e3:2a:21:30:c6:b8:c6:5e:ea:d5:63:
-        0d:de:4d:96:70:c8:74:ff:95:6f:d3:5d:b4:57:c5:d1:12:04:
-        29:99:6f:3a:4b:08:a0:d8:76:d6:e7:d2:d2:17:7d:46:2b:19:
-        49:a5:80:1b:3e:92:52:f8:20:5b:f0:a8:e7:4f:9e:70:dd:95:
-        ad:f6:97:7c:91:ae:0a:15:42:fb:2a:6a:dd:60:57:2e:fc:04:
-        64:73:3f:f2:ce:ae:26:1e:df:a2:d2:6d:93:ee:9c:9b:50:88:
-        e2:86:31:31
+        5c:5b:eb:ed:e4:41:f9:49:ab:75:04:37:6d:b2:eb:01:d8:2c:
+        f3:64:df:8b:11:3b:67:a7:af:de:cf:a8:89:bd:62:20:e9:6d:
+        dc:92:eb:dd:bd:e5:20:fa:f5:fe:e9:6c:3c:ae:f6:e9:bc:ab:
+        36:d3:84:2b:bc:9e:34:6b:51:0b:07:9c:da:91:e8:1d:5c:b5:
+        85:61:69:c1:fe:0a:cb:c0:52:41:5b:77:b7:63:d1:47:b7:13:
+        28:ad:00:1e:83:57:35:d9:b7:85:bf:49:17:aa:49:9c:ba:69:
+        4d:c9:2f:35:73:4c:17:b5:0b:e7:be:a7:06:aa:29:51:05:6f:
+        1d:d5:fa:7e:96:59:47:c8:b9:08:f4:8f:ca:9c:f6:db:63:ac:
+        05:b5:f6:61:63:e5:13:a4:12:86:56:2c:4f:21:16:0d:86:e8:
+        03:d2:2d:06:49:2c:32:ab:3e:c3:cb:c2:4e:a6:71:3a:ee:c2:
+        0f:a6:63:2e:6d:0a:9b:dc:9f:f4:2c:5a:59:9a:f5:a4:d0:9b:
+        72:02:30:71:e6:9e:c7:b2:7a:36:b3:df:29:2e:93:5a:42:22:
+        12:07:9f:ca:88:3a:02:ad:a4:80:3f:e7:18:a6:52:22:06:3d:
+        e1:6c:8e:20:33:10:0c:2e:32:bb:75:ad:19:95:06:6a:14:96:
+        36:83:f8:32

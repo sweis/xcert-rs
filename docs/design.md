@@ -2,48 +2,55 @@
 
 ## 1. Overview
 
-`xcert` is a Rust command-line tool and library for parsing and displaying X.509
-certificates. It is a read-only replacement for the display and inspection
-features of `openssl x509`, with a simplified, modern CLI interface.
+`xcert` is a Rust command-line tool and library for parsing, displaying, and
+verifying X.509 certificates. It is a read-only replacement for the inspection
+and verification features of `openssl x509` and `openssl verify`, with a
+simplified, modern CLI interface.
 
 ### Goals
 - Parse X.509 certificates from PEM and DER formats
 - Display certificate information in human-readable and JSON formats
 - Extract individual fields for scripting
 - Check certificate validity (expiry, hostname, email, IP)
+- Verify certificate chains against system or custom trust stores
+- CRL revocation checking
 - Convert between PEM and DER encodings
 - Provide a library interface (`xcert-lib`) usable programmatically
 
 ### Non-Goals
 - Certificate creation, signing, or modification
-- Trust store management
-- Full chain validation (use `openssl verify` or webpki for that). Note: Chain verification is now implemented via the `verify` subcommand.
+- Trust store management (creation or modification)
 - Private key handling
 
 ## 2. Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   xcert (CLI binary)             │
-│  ┌───────────┐ ┌────────┐ ┌───────┐ ┌────────┐ │
-│  │  show cmd  │ │field   │ │check  │ │convert │ │
-│  │            │ │cmd     │ │cmd    │ │cmd     │ │
-│  └─────┬─────┘ └───┬────┘ └───┬───┘ └───┬────┘ │
-│        └────────────┴──────────┴─────────┘      │
-│                      │                           │
-│              ┌───────┴────────┐                  │
-│              │  xcert-lib     │                  │
-│              │  (library)     │                  │
-│              └───────┬────────┘                  │
-│                      │                           │
-│       ┌──────────────┼──────────────┐            │
-│       │              │              │            │
-│  ┌────┴─────┐  ┌─────┴────┐  ┌─────┴────┐      │
-│  │  Parser   │  │ Display  │  │ Check    │      │
-│  │  module   │  │ module   │  │ module   │      │
-│  └────┬─────┘  └──────────┘  └──────────┘      │
-│       │                                          │
-└───────┼──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       xcert (CLI binary)                     │
+│  ┌──────────┐ ┌───────┐ ┌───────┐ ┌─────────┐ ┌─────────┐  │
+│  │ show cmd │ │field  │ │check  │ │convert  │ │ verify  │  │
+│  │          │ │cmd    │ │cmd    │ │cmd      │ │ cmd     │  │
+│  └────┬─────┘ └──┬────┘ └──┬────┘ └────┬────┘ └────┬────┘  │
+│       └──────────┴─────────┴────────────┴───────────┘       │
+│                             │                                │
+│                    ┌────────┴─────────┐                      │
+│                    │    xcert-lib     │                      │
+│                    │    (library)     │                      │
+│                    └────────┬─────────┘                      │
+│                             │                                │
+│       ┌─────────────┬───────┼───────┬──────────────┐        │
+│       │             │       │       │              │        │
+│  ┌────┴─────┐ ┌─────┴────┐ │ ┌─────┴────┐  ┌──────┴─────┐  │
+│  │ Parser   │ │ Display  │ │ │ Check    │  │  Verify    │  │
+│  │ module   │ │ module   │ │ │ module   │  │  module    │  │
+│  └────┬─────┘ └──────────┘ │ └──────────┘  └──────┬─────┘  │
+│       │                    │                       │        │
+│       │              ┌─────┴──────┐    ┌───────────┤        │
+│       │              │ Fingerprint│    │ TrustStore│        │
+│       │              │ module     │    │ WebPKI    │        │
+│       │              └────────────┘    │ CRL       │        │
+│       │                                └───────────┘        │
+└───────┼─────────────────────────────────────────────────────┘
         │
    ┌────┴───────────────┐
    │  x509-parser crate │  (external dependency)
@@ -61,18 +68,38 @@ xcert-rs/
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs
-└── xcert-lib/               # Library crate
-    ├── Cargo.toml
-    ├── src/
-    │   ├── lib.rs           # Public API
-    │   ├── parser.rs        # PEM/DER parsing, format detection
-    │   ├── display.rs       # Human-readable formatting
-    │   ├── fields.rs        # Individual field extraction
-    │   ├── check.rs         # Validity checks (expiry, hostname, IP, email)
-    │   ├── convert.rs       # PEM <-> DER conversion
-    │   └── fingerprint.rs   # Digest computation
-    └── tests/
-        └── integration.rs   # Integration tests using test vectors
+├── xcert-lib/               # Library crate
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── lib.rs           # Public API and re-exports
+│   │   ├── parser.rs        # PEM/DER parsing, format detection
+│   │   ├── display.rs       # Human-readable formatting
+│   │   ├── fields.rs        # CertificateInfo, Extension types, field extraction
+│   │   ├── check.rs         # Validity checks (expiry, hostname, IP, email)
+│   │   ├── convert.rs       # PEM <-> DER conversion
+│   │   ├── fingerprint.rs   # Digest computation (SHA-256/384/512/SHA-1)
+│   │   ├── oid.rs           # Centralized OID string constants
+│   │   ├── util.rs          # Shared utilities (hex, base64, PEM detection)
+│   │   └── verify/          # Certificate chain verification
+│   │       ├── mod.rs        # Public verify API
+│   │       ├── chain.rs      # Chain building and verification orchestration
+│   │       ├── checks.rs     # Individual check functions (time, constraints, etc.)
+│   │       ├── constraints.rs # Name Constraints validation
+│   │       ├── crl.rs        # CRL revocation checking
+│   │       ├── helpers.rs    # Verification helper functions
+│   │       ├── trust_store.rs # TrustStore: system and custom CA management
+│   │       └── webpki.rs     # WebPKI/CABF Baseline Requirements policy checks
+│   └── tests/
+│       ├── integration.rs    # Integration tests using generated test certs
+│       ├── pyca_cryptography.rs  # Tests against pyca/cryptography vectors
+│       └── zlint.rs          # Tests against zlint certificate corpus
+├── testdata/                # Test certificates and external vectors
+│   ├── certs/               # Generated test certs (via generate.sh)
+│   ├── zlint/               # Git submodule: zmap/zlint
+│   ├── x509-limbo/          # Git submodule: C2SP/x509-limbo
+│   └── pyca-cryptography/   # Git submodule: pyca/cryptography
+├── fuzz/                    # Fuzzing targets (cargo-fuzz)
+└── docs/                    # Documentation
 ```
 
 ## 3. Dependencies
@@ -81,13 +108,17 @@ xcert-rs/
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `x509-parser` | 0.18 | Core X.509 DER/PEM parsing |
+| `x509-parser` | 0.18 | Core X.509 DER/PEM parsing (with `verify` feature) |
 | `sha2` | 0.10 | SHA-256/384/512 fingerprints |
 | `sha1` | 0.10 | SHA-1 fingerprints (legacy compat) |
 | `serde` | 1 | Serialization (with `derive` feature) |
 | `serde_json` | 1 | JSON output |
 | `thiserror` | 2 | Error types |
 | `hex` | 0.4 | Hex encoding for fingerprints/serial |
+| `base64` | 0.22 | Base64 encoding for PEM conversion |
+| `openssl-probe` | 0.2 | System trust store path detection |
+| `time` | 0.3 | Date/time formatting |
+| `colored` | 2 | Colored terminal output in display module |
 
 ### xcert (CLI)
 
@@ -96,6 +127,12 @@ xcert-rs/
 | `xcert-lib` | path | The library |
 | `clap` | 4 | CLI argument parsing (with `derive` feature) |
 | `anyhow` | 1 | Error handling in binary |
+| `humantime` | 2 | Human-readable duration parsing (30d, 1w, etc.) |
+| `rayon` | 1 | Parallel directory processing |
+| `walkdir` | 2 | Recursive directory traversal |
+| `colored` | 2 | Colored terminal output |
+| `serde` | 1 | JSON batch output serialization |
+| `serde_json` | 1 | JSON output |
 
 ## 4. Library API Design
 
@@ -105,7 +142,7 @@ xcert-rs/
 /// A parsed X.509 certificate with extracted fields.
 pub struct CertificateInfo {
     pub version: u32,
-    pub serial: String,                  // Hex string
+    pub serial: String,                  // Hex string (colon-separated)
     pub signature_algorithm: String,
     pub issuer: DistinguishedName,
     pub subject: DistinguishedName,
@@ -114,9 +151,7 @@ pub struct CertificateInfo {
     pub public_key: PublicKeyInfo,
     pub extensions: Vec<Extension>,
     pub signature: Vec<u8>,
-
-    // Raw DER bytes for fingerprint computation
-    raw_der: Vec<u8>,
+    raw_der: Vec<u8>,                    // Raw DER for fingerprints
 }
 
 /// Distinguished name with ordered components.
@@ -126,19 +161,12 @@ pub struct DistinguishedName {
 
 /// Public key summary.
 pub struct PublicKeyInfo {
-    pub algorithm: String,      // "RSA", "EC", "Ed25519", etc.
-    pub key_size: Option<u32>,  // Bit size (e.g., 2048 for RSA)
-    pub curve: Option<String>,  // e.g., "P-256" for EC keys
+    pub algorithm: String,       // "RSA", "EC", "Ed25519", "Ed448", etc.
+    pub key_size: Option<u32>,   // Bit size (e.g., 2048 for RSA)
+    pub curve: Option<String>,   // e.g., "P-256" for EC keys
     pub modulus: Option<String>, // Hex string for RSA
-    pub pem: String,            // PEM-encoded SubjectPublicKeyInfo
-}
-
-/// A certificate extension.
-pub struct Extension {
-    pub oid: String,
-    pub name: String,       // Human-readable name or OID if unknown
-    pub critical: bool,
-    pub value: ExtensionValue,
+    pub exponent: Option<u64>,   // Public exponent for RSA (e.g., 65537)
+    pub pem: String,             // PEM-encoded SubjectPublicKeyInfo
 }
 
 /// Strongly-typed extension values.
@@ -152,6 +180,7 @@ pub enum ExtensionValue {
     AuthorityInfoAccess(Vec<AiaEntry>),
     CrlDistributionPoints(Vec<String>),
     CertificatePolicies(Vec<String>),
+    NsComment(String),
     Raw(String),  // Hex dump for unknown extensions
 }
 
@@ -160,17 +189,8 @@ pub enum SanEntry {
     Email(String),
     Ip(String),
     Uri(String),
+    DirName(String),
     Other(String),
-}
-
-pub struct AiaEntry {
-    pub method: String,   // "OCSP" or "CA Issuers"
-    pub location: String, // URI
-}
-
-pub struct DateTime {
-    // Internal representation using the ASN1Time from x509-parser
-    // Displays as ISO 8601 by default
 }
 ```
 
@@ -178,97 +198,60 @@ pub struct DateTime {
 
 ```rust
 // --- Parsing ---
-
-/// Parse a certificate from PEM or DER (auto-detected).
 pub fn parse_cert(input: &[u8]) -> Result<CertificateInfo, XcertError>;
-
-/// Parse a certificate from PEM.
 pub fn parse_pem(input: &[u8]) -> Result<CertificateInfo, XcertError>;
-
-/// Parse a certificate from DER.
 pub fn parse_der(input: &[u8]) -> Result<CertificateInfo, XcertError>;
 
-// --- Field Extraction ---
-// (All available as methods on CertificateInfo)
-
-impl CertificateInfo {
-    pub fn subject_string(&self) -> String;
-    pub fn issuer_string(&self) -> String;
-    pub fn serial_hex(&self) -> &str;
-    pub fn not_before_string(&self) -> String;
-    pub fn not_after_string(&self) -> String;
-    pub fn fingerprint(&self, algorithm: DigestAlgorithm) -> String;
-    pub fn public_key_pem(&self) -> &str;
-    pub fn modulus_hex(&self) -> Option<&str>;
-    pub fn emails(&self) -> Vec<&str>;
-    pub fn san_entries(&self) -> Vec<&SanEntry>;
-    pub fn ocsp_urls(&self) -> Vec<&str>;
-    pub fn key_usage(&self) -> Option<&[String]>;
-    pub fn ext_key_usage(&self) -> Option<&[String]>;
-}
-
-pub enum DigestAlgorithm {
-    Sha256,
-    Sha384,
-    Sha512,
-    Sha1,
-}
-
-// --- Display ---
-
-/// Format certificate as human-readable text (similar to openssl x509 -text).
-pub fn display_text(cert: &CertificateInfo, show_all: bool) -> String;
-
-/// Serialize certificate info to JSON.
-pub fn to_json(cert: &CertificateInfo) -> Result<String, XcertError>;
-
 // --- Checks ---
-
-/// Check if certificate expires within `seconds` from now.
-/// Returns true if the certificate will still be valid.
 pub fn check_expiry(cert: &CertificateInfo, seconds: u64) -> bool;
-
-/// Check if certificate matches a hostname (checks CN and SAN DNS entries).
 pub fn check_host(cert: &CertificateInfo, hostname: &str) -> bool;
-
-/// Check if certificate matches an email address (checks subject and SAN).
 pub fn check_email(cert: &CertificateInfo, email: &str) -> bool;
-
-/// Check if certificate matches an IP address (checks SAN IP entries).
 pub fn check_ip(cert: &CertificateInfo, ip: &str) -> bool;
 
 // --- Conversion ---
-
-/// Convert DER bytes to PEM string.
 pub fn der_to_pem(der: &[u8]) -> String;
-
-/// Convert PEM string to DER bytes.
 pub fn pem_to_der(pem: &[u8]) -> Result<Vec<u8>, XcertError>;
-```
 
-### Error Types
+// --- Display ---
+pub fn display_text(cert: &CertificateInfo, show_all: bool) -> String;
+pub fn to_json(cert: &CertificateInfo) -> Result<String, XcertError>;
 
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum XcertError {
-    #[error("Failed to parse certificate: {0}")]
-    ParseError(String),
+// --- Verification ---
+pub fn verify_chain(chain_der: &[Vec<u8>], store: &TrustStore,
+                    hostname: Option<&str>) -> Result<VerificationResult, XcertError>;
+pub fn verify_chain_with_options(chain_der: &[Vec<u8>], store: &TrustStore,
+                                 hostname: Option<&str>, opts: &VerifyOptions)
+    -> Result<VerificationResult, XcertError>;
+pub fn verify_with_untrusted(leaf_der: &[u8], untrusted_pem: &[u8],
+                              store: &TrustStore, hostname: Option<&str>,
+                              opts: &VerifyOptions)
+    -> Result<VerificationResult, XcertError>;
 
-    #[error("Invalid PEM format: {0}")]
-    PemError(String),
-
-    #[error("Invalid DER format: {0}")]
-    DerError(String),
-
-    #[error("Unsupported feature: {0}")]
-    Unsupported(String),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("JSON serialization error: {0}")]
-    Json(#[from] serde_json::Error),
+// --- Trust Store ---
+pub struct TrustStore { /* ... */ }
+impl TrustStore {
+    pub fn system() -> Result<Self, XcertError>;
+    pub fn from_pem(pem_data: &[u8]) -> Result<Self, XcertError>;
+    pub fn from_pem_file(path: &Path) -> Result<Self, XcertError>;
+    pub fn add_pem_bundle(&mut self, pem_data: &[u8]) -> Result<usize, XcertError>;
+    pub fn add_pem_directory(&mut self, dir: &Path) -> Result<usize, XcertError>;
 }
+
+pub struct VerifyOptions {
+    pub check_time: bool,
+    pub partial_chain: bool,
+    pub purpose: Option<String>,
+    pub at_time: Option<i64>,
+    pub verify_depth: Option<usize>,
+    pub verify_email: Option<String>,
+    pub verify_ip: Option<String>,
+    pub crl_ders: Vec<Vec<u8>>,
+    pub crl_check_leaf: bool,
+    pub crl_check_all: bool,
+    pub policy: VerifyPolicy,
+}
+
+pub enum VerifyPolicy { Default, WebPki }
 ```
 
 ## 5. CLI Design
@@ -284,7 +267,10 @@ to library functions:
 | `xcert field <F>` | `parse_cert()` + corresponding `CertificateInfo` method |
 | `xcert check <C>` | `parse_cert()` + `check_*()` |
 | `xcert convert` | `pem_to_der()` or `der_to_pem()` |
-| `xcert verify` | `verify_chain()` + chain building |
+| `xcert verify` | `verify_chain_with_options()` + `TrustStore` |
+
+All commands support directory mode (batch processing) with `--json` and
+`--failures-only` options, plus `--recurse` for recursive directory traversal.
 
 ## 6. Input Format Detection
 
@@ -295,58 +281,18 @@ Auto-detection algorithm:
    treat as PEM.
 3. Otherwise, treat as DER.
 
-This handles the common case (PEM files and raw DER blobs) without requiring
-the user to specify the format.
-
 ## 7. Output Formatting
 
 ### Human-readable (default)
 
 The `show` command produces output structured similarly to `openssl x509 -text`
-but with cleaner formatting:
-
-```
-Certificate:
-  Version: 3 (v3)
-  Serial: 10:00
-  Signature Algorithm: SHA-256 with RSA
-  Issuer: CN=Test Intermediate CA, OU=Intermediate Authority, O=Test PKI, ST=California, C=US
-  Validity:
-    Not Before: 2026-02-03T23:57:06Z
-    Not After:  2101-02-03T23:57:06Z
-  Subject: CN=www.example.com, O=Example Corp, L=San Francisco, ST=California, C=US
-  Public Key:
-    Algorithm: RSA (2048 bit)
-  Extensions:
-    Basic Constraints: CA=false
-    Key Usage: [critical] Digital Signature, Key Encipherment
-    Extended Key Usage: TLS Web Server Authentication
-    Subject Alternative Name:
-      DNS: www.example.com
-      DNS: example.com
-      DNS: *.example.com
-      IP: 93.184.216.34
-      IP: 2606:2800:220:1:248:1893:25c8:1946
-      Email: admin@example.com
-    Authority Information Access:
-      OCSP: http://ocsp.example.com
-      CA Issuers: http://ca.example.com/intermediate.crt
-    CRL Distribution Points:
-      http://crl.example.com/intermediate.crl
-  Fingerprint (SHA-256): ed:d7:70:25:...
-```
-
-Key differences from openssl:
-- Dates in ISO 8601 format
-- No hexdump of signature bytes (unless `--all`)
-- No hexdump of public key modulus (unless `--all` or `field modulus`)
-- Extensions are formatted more cleanly
-- Fingerprint included by default
+but with cleaner formatting and colored output in terminals.
 
 ### JSON
 
 The `--json` flag produces structured JSON output. All fields are present, with
-extensions as typed objects. This is designed for programmatic consumption.
+extensions as typed objects. Bulk operations return a `results` array with a
+`summary` object.
 
 ## 8. Hostname Matching
 
@@ -358,38 +304,16 @@ The `check host` command implements RFC 6125 hostname matching:
 3. Only fall back to CN matching if no SAN DNS entries exist.
 4. Case-insensitive comparison.
 
-## 9. Implementation Plan
+## 9. Test Strategy
 
-### Phase 1: Core Library
-1. Set up Cargo workspace with `xcert-lib` and `xcert` crates
-2. Implement `parser.rs` -- PEM/DER parsing and format detection
-3. Implement `fields.rs` -- CertificateInfo construction and field extraction
-4. Implement `fingerprint.rs` -- digest computation
-5. Implement `display.rs` -- human-readable text formatting
-6. Implement `check.rs` -- expiry, hostname, email, IP checks
-7. Implement `convert.rs` -- PEM/DER conversion
-
-### Phase 2: CLI Binary
-8. Set up clap argument parsing with subcommands
-9. Wire up `show` command
-10. Wire up `field` command
-11. Wire up `check` command
-12. Wire up `convert` command
-
-### Phase 3: Polish
-13. JSON output support
-14. Error messages and edge cases
-15. Documentation and examples
-
-### Test Strategy
-
-Tests are organized at the library level using the generated test certificates:
+276 tests organized across the library:
 
 - **Unit tests** in each module for internal logic
-- **Integration tests** in `xcert-lib/tests/` using the test vectors in
-  `testdata/certs/` and comparing against the reference outputs in
-  `testdata/certs/reference/`
-- **CLI tests** (future) using `assert_cmd` to test the binary end-to-end
+- **Integration tests** in `xcert-lib/tests/` using test vectors in
+  `testdata/certs/` and comparing against reference outputs
+- **External test vectors** from three git submodules: zlint, x509-limbo,
+  pyca/cryptography
+- **Fuzz targets** for parsing robustness
 
 Test categories:
 1. Parsing tests -- PEM, DER, auto-detect, invalid input, chain bundles
@@ -399,4 +323,5 @@ Test categories:
 5. Check tests -- expiry, hostname, email, IP (positive and negative)
 6. Conversion tests -- PEM->DER->PEM roundtrip
 7. Key algorithm tests -- RSA, ECDSA P-256, ECDSA P-384, Ed25519
-8. Edge cases -- minimal certs, UTF-8 subjects, many extensions, expired certs
+8. Verification tests -- chain validation, trust anchoring, CRL, WebPKI
+9. Edge cases -- minimal certs, UTF-8 subjects, many extensions, expired certs

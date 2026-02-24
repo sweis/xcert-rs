@@ -5,7 +5,7 @@ improvement opportunities organized by review category.
 
 ## Current State Summary
 
-- **240 tests passing** (217 integration + 15 pyca + 8 zlint)
+- **276 tests passing** (36 unit + 217 integration + 15 pyca + 8 zlint)
 - **0 clippy warnings**
 - **Formatting clean** (cargo fmt passes)
 - **All test vectors working** (pyca and zlint submodules fully functional)
@@ -34,7 +34,7 @@ The codebase follows Rust style conventions consistently.
 ### Issues Found
 
 1. **README.md test count outdated**: States "210 integration tests" but actual
-   count is 217 integration tests + 15 pyca + 8 zlint = 240 total tests.
+   count is 36 unit + 217 integration + 15 pyca + 8 zlint = 276 total tests.
 
 2. **docs/design.md outdated**: Lists "Full chain validation" as a non-goal, but
    the `verify` subcommand is fully implemented with comprehensive chain
@@ -48,7 +48,7 @@ The codebase follows Rust style conventions consistently.
 
 ### Recommended Changes
 
-- [ ] Update README.md test counts to 240 total
+- [x] Update README.md test counts to 276 total
 - [ ] Update docs/design.md to reflect that chain verification is implemented
 - [ ] Update docs/design.md dependency versions
 - [ ] Remove or update outdated Phase references in docs
@@ -57,26 +57,10 @@ The codebase follows Rust style conventions consistently.
 
 ## 3. Refactoring Opportunities
 
-### 3.1 verify.rs Module Size (2378 lines)
+### 3.1 verify module (previously single file, now split)
 
-The verification module is the largest in the codebase. While the internal
-structure is well-factored with helper functions, it could benefit from being
-split into submodules:
-
-```
-verify/
-├── mod.rs           # Public API, VerifyOptions, VerificationResult
-├── trust_store.rs   # TrustStore implementation
-├── chain.rs         # Chain building (DFS path building)
-├── constraints.rs   # Name Constraints checking
-├── crl.rs           # CRL parsing and revocation checking
-├── webpki.rs        # WebPKI policy validation
-└── helpers.rs       # extract_*, verify_*, is_*
-```
-
-**Impact**: Medium (maintainability improvement)
-**Effort**: Low-medium
-**Priority**: Low (current structure is functional)
+The verification module was the largest in the codebase (2378 lines) and has
+been split into submodules. See Completed Improvements below for details.
 
 ### 3.2 main.rs Batch Processing
 
@@ -151,10 +135,11 @@ All test vectors work correctly:
 
 | Category | Tests | Status |
 |----------|-------|--------|
+| Unit tests (lib + CLI) | 36 | ✓ All pass |
 | Integration tests | 217 | ✓ All pass |
 | pyca/cryptography | 15 | ✓ All pass |
 | zlint | 8 | ✓ All pass |
-| **Total** | **240** | ✓ All pass |
+| **Total** | **276** | ✓ All pass |
 
 ### Test Coverage
 
@@ -240,7 +225,7 @@ The codebase uses appropriate standard libraries:
 
 1. Test count says "210 integration tests" in project structure section
 2. Test count says "155 integration tests" in xcert-lib description
-3. Both should say "217 integration tests" (or "240 total tests")
+3. Both should say "276 total tests"
 
 ### docs/design.md Issues
 
@@ -282,7 +267,7 @@ resolved." The file documents closed issues appropriately.
 
 ### Documentation Updates (Completed)
 
-1. README.md: Updated test counts to 217 integration tests, 240 total
+1. README.md: Updated test counts to 276 total
 2. docs/design.md: Updated to reflect chain verification is implemented
 3. docs/design.md: Updated x509-parser version to 0.18
 
@@ -306,7 +291,7 @@ resolved." The file documents closed issues appropriately.
 
 ### Verification
 
-- All 240 tests pass (217 integration + 15 pyca + 8 zlint)
+- All 276 tests pass (36 unit + 217 integration + 15 pyca + 8 zlint)
 - Zero clippy warnings
 - Clean formatting
 
