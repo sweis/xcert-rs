@@ -25,6 +25,8 @@ pub const DOMAIN_COMPONENT: &str = "0.9.2342.19200300.100.1.25";
 // ── Signature algorithms ─────────────────────────────────────────────────
 
 pub const SHA1_WITH_RSA: &str = "1.2.840.113549.1.1.5";
+pub const ECDSA_WITH_SHA1: &str = "1.2.840.10045.4.1";
+pub const DSA_WITH_SHA1: &str = "1.2.840.10040.4.3";
 pub const SHA256_WITH_RSA: &str = "1.2.840.113549.1.1.11";
 pub const SHA384_WITH_RSA: &str = "1.2.840.113549.1.1.12";
 pub const SHA512_WITH_RSA: &str = "1.2.840.113549.1.1.13";

@@ -205,7 +205,20 @@ pub(crate) fn check_webpki_policy(
 }
 
 /// Check for weak or forbidden cryptographic algorithms (WebPKI / CABF BRs).
+///
+/// Checks both the public key algorithm/size and the signature algorithm.
+/// SHA-1 signatures are forbidden in WebPKI since 2016 (CABF Ballot 187).
 pub(crate) fn check_weak_crypto(cert: &X509Certificate) -> Option<String> {
+    // Check signature algorithm: SHA-1 is forbidden
+    let sig_oid = cert.signature_algorithm.algorithm.to_id_string();
+    match sig_oid.as_str() {
+        oid::SHA1_WITH_RSA | oid::ECDSA_WITH_SHA1 | oid::DSA_WITH_SHA1 => {
+            return Some("uses forbidden SHA-1 signature algorithm".into());
+        }
+        _ => {}
+    }
+
+    // Check public key algorithm and size
     let pk = cert.public_key();
     let algo_oid = pk.algorithm.algorithm.to_id_string();
 

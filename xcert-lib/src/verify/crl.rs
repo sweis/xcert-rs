@@ -93,11 +93,16 @@ pub fn check_crl_revocation(
             }
         }
 
-        // Verify CRL signature against the issuer's public key
-        if let Some(issuer) = issuer_cert {
-            if crl.verify_signature(issuer.public_key()).is_err() {
-                continue;
+        // Verify CRL signature against the issuer's public key.
+        // If no issuer certificate is available, skip this CRL — accepting
+        // an unverified CRL could allow forged revocation status.
+        match issuer_cert {
+            Some(issuer) => {
+                if crl.verify_signature(issuer.public_key()).is_err() {
+                    continue;
+                }
             }
+            None => continue,
         }
 
         // Check if the certificate's serial number is in the revoked list
