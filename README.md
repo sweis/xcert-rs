@@ -4,6 +4,8 @@
 
 A fast, memory-safe command-line tool for inspecting X.509 certificates. Read-only alternative to `openssl x509` with JSON output and colored terminal display.
 
+**Warning**: This code is experimental and not ready for production. It is mostly AI generated and has not had human review.
+
 ## Quick Start
 
 ```bash
