@@ -70,6 +70,7 @@ fn build_certificate_info(
 ) -> Result<CertificateInfo, XcertError> {
     let tbs = &x509.tbs_certificate;
 
+    // X.509 version field is zero-indexed: v1=0, v2=1, v3=2 (per RFC 5280 §4.1)
     let raw_version = tbs.version.0;
     if raw_version > 2 {
         return Err(XcertError::ParseError(format!(
@@ -112,6 +113,11 @@ fn build_certificate_info(
 
 /// Format a serial number as a colon-separated uppercase hex string,
 /// stripping leading zero bytes but keeping at least one byte.
+///
+/// DER INTEGER encoding may include a leading `0x00` byte to indicate
+/// a positive value when the high bit of the first content byte is set.
+/// We strip these for display. If the serial is all zeros (e.g., `00`),
+/// `position()` returns `None` and we keep the last byte.
 fn format_serial(raw: &[u8]) -> String {
     let stripped = match raw.iter().position(|&b| b != 0) {
         Some(pos) => raw.get(pos..).unwrap_or(raw),
@@ -208,12 +214,17 @@ fn build_public_key_info(spki: &SubjectPublicKeyInfo) -> Result<PublicKeyInfo, X
 ///
 /// Returns `None` if the DER structure cannot be parsed, rather than
 /// silently returning incorrect fallback values.
+///
+/// The RSA public key is encoded as a DER SEQUENCE of two INTEGERs
+/// (modulus, exponent) per PKCS#1 / RFC 3279 §2.3.1.
 fn extract_rsa_params(data: &[u8]) -> Option<(String, u32, u64)> {
     let (_, parsed) = x509_parser::der_parser::parse_der(data).ok()?;
     let seq = parsed.as_sequence().ok()?;
     let bigint = seq.first().and_then(|m| m.as_bigint().ok())?;
     let bytes = bigint.to_bytes_be().1;
-    // Skip leading zero byte used for DER positive integer encoding
+    // DER INTEGER uses a leading 0x00 byte to keep the value positive
+    // when the high bit of the first content byte is set. Strip it for
+    // display and bit-size computation.
     let significant = match bytes.split_first() {
         Some((&0, rest)) if !rest.is_empty() => rest,
         _ => &bytes,

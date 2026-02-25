@@ -5,7 +5,7 @@ improvement opportunities organized by review category.
 
 ## Current State Summary
 
-- **276 tests passing** (36 unit + 217 integration + 15 pyca + 8 zlint)
+- **279 tests passing** (36 unit + 217 integration + 15 pyca + 8 zlint + 3 doc-tests)
 - **0 clippy warnings**
 - **Formatting clean** (cargo fmt passes)
 - **All test vectors working** (pyca and zlint submodules fully functional)
@@ -34,7 +34,7 @@ The codebase follows Rust style conventions consistently.
 ### Issues Found
 
 1. **README.md test count outdated**: States "210 integration tests" but actual
-   count is 36 unit + 217 integration + 15 pyca + 8 zlint = 276 total tests.
+   count is 36 unit + 217 integration + 15 pyca + 8 zlint + 3 doc-tests = 279 total tests.
 
 2. **docs/design.md outdated**: Lists "Full chain validation" as a non-goal, but
    the `verify` subcommand is fully implemented with comprehensive chain
@@ -139,7 +139,8 @@ All test vectors work correctly:
 | Integration tests | 217 | ✓ All pass |
 | pyca/cryptography | 15 | ✓ All pass |
 | zlint | 8 | ✓ All pass |
-| **Total** | **276** | ✓ All pass |
+| Doc-tests | 3 | ✓ All pass |
+| **Total** | **279** | ✓ All pass |
 
 ### Test Coverage
 
@@ -225,7 +226,7 @@ The codebase uses appropriate standard libraries:
 
 1. Test count says "210 integration tests" in project structure section
 2. Test count says "155 integration tests" in xcert-lib description
-3. Both should say "276 total tests"
+3. Both should say "279 total tests"
 
 ### docs/design.md Issues
 
@@ -291,7 +292,7 @@ resolved." The file documents closed issues appropriately.
 
 ### Verification
 
-- All 276 tests pass (36 unit + 217 integration + 15 pyca + 8 zlint)
+- All 279 tests pass (36 unit + 217 integration + 15 pyca + 8 zlint + 3 doc-tests)
 - Zero clippy warnings
 - Clean formatting
 

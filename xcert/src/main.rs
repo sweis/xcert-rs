@@ -373,6 +373,13 @@ fn read_input(file: Option<&PathBuf>) -> Result<Vec<u8>> {
                 .take(MAX_INPUT_BYTES)
                 .read_to_end(&mut buf)
                 .context("Failed to read from stdin")?;
+            #[allow(clippy::cast_possible_truncation)]
+            if buf.len() as u64 >= MAX_INPUT_BYTES {
+                anyhow::bail!(
+                    "Stdin input too large (exceeds {} byte limit)",
+                    MAX_INPUT_BYTES
+                );
+            }
             Ok(buf)
         }
     }
@@ -786,14 +793,18 @@ fn run() -> Result<()> {
                     let show_all = *all;
 
                     if *json {
-                        let (output, _) = run_batch_json(&files, |f| {
+                        let (output, failures) = run_batch_json(&files, |f| {
                             let data = std::fs::read(f).map_err(|e| e.to_string())?;
                             let cert = parse_input(&data, force_der, force_pem)
                                 .map_err(|e| e.to_string())?;
                             Ok(cert)
                         });
                         println!("{}", serde_json::to_string_pretty(&output)?);
+                        if failures > 0 {
+                            std::process::exit(1);
+                        }
                     } else {
+                        let mut errors = 0u64;
                         for f in &files {
                             let data = match std::fs::read(f) {
                                 Ok(d) => d,
@@ -804,6 +815,7 @@ fn run() -> Result<()> {
                                         colors::fail("ERROR"),
                                         e
                                     );
+                                    errors += 1;
                                     continue;
                                 }
                             };
@@ -816,6 +828,7 @@ fn run() -> Result<()> {
                                         colors::fail("ERROR"),
                                         e
                                     );
+                                    errors += 1;
                                     continue;
                                 }
                             };
@@ -824,6 +837,9 @@ fn run() -> Result<()> {
                                 colors::label(&f.display().to_string()),
                                 xcert_lib::display_text(&cert, show_all)
                             );
+                        }
+                        if errors > 0 {
+                            std::process::exit(1);
                         }
                     }
                     return Ok(());
@@ -866,14 +882,18 @@ fn run() -> Result<()> {
                     let digest_alg = digest.clone();
 
                     if *json {
-                        let (output, _) = run_batch_json(&files, |f| {
+                        let (output, failures) = run_batch_json(&files, |f| {
                             let data = std::fs::read(f).map_err(|e| e.to_string())?;
                             let cert = parse_input(&data, force_der, force_pem)
                                 .map_err(|e| e.to_string())?;
                             extract_field_value(&cert, &field_type, &digest_alg)
                         });
                         println!("{}", serde_json::to_string_pretty(&output)?);
+                        if failures > 0 {
+                            std::process::exit(1);
+                        }
                     } else {
+                        let mut errors = 0u64;
                         for f in &files {
                             let data = match std::fs::read(f) {
                                 Ok(d) => d,
@@ -884,6 +904,7 @@ fn run() -> Result<()> {
                                         colors::fail("ERROR"),
                                         e
                                     );
+                                    errors += 1;
                                     continue;
                                 }
                             };
@@ -896,6 +917,7 @@ fn run() -> Result<()> {
                                         colors::fail("ERROR"),
                                         e
                                     );
+                                    errors += 1;
                                     continue;
                                 }
                             };
@@ -914,8 +936,12 @@ fn run() -> Result<()> {
                                         colors::fail("ERROR"),
                                         e
                                     );
+                                    errors += 1;
                                 }
                             }
+                        }
+                        if errors > 0 {
+                            std::process::exit(1);
                         }
                     }
                     return Ok(());
@@ -1203,6 +1229,15 @@ fn run() -> Result<()> {
                 CheckType::Email => xcert_lib::check_email(&cert, value),
                 CheckType::Ip => xcert_lib::check_ip(&cert, value),
             };
+
+            if *json {
+                let result = CheckResult {
+                    check: format!("{:?}", check).to_lowercase(),
+                    value: value.clone(),
+                    passed: pass,
+                };
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
 
             if !pass {
                 std::process::exit(1);

@@ -242,7 +242,7 @@ The `summary` counts processing outcomes: `succeeded` is the number of files pro
 cargo test
 ```
 
-276 tests covering parsing, verification, checks, conversions, and compatibility with external test vectors.
+279 tests covering parsing, verification, checks, conversions, and compatibility with external test vectors.
 
 ### External test vector suites
 

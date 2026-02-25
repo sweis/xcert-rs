@@ -306,7 +306,7 @@ The `check host` command implements RFC 6125 hostname matching:
 
 ## 9. Test Strategy
 
-276 tests organized across the library:
+279 tests organized across the library:
 
 - **Unit tests** in each module for internal logic
 - **Integration tests** in `xcert-lib/tests/` using test vectors in
