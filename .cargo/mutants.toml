@@ -1,0 +1,17 @@
+# cargo-mutants configuration
+# See https://mutants.rs/ for full documentation.
+
+# Skip functions whose behavior is intentionally not assertable from tests:
+#  - CLI color helpers (output styling, not logic)
+#  - base64_wrap mutations cause infinite loops (timeouts, not gaps)
+#  - system trust-store discovery depends on the host filesystem
+exclude_re = [
+    # CLI color helpers — styling only
+    "src/main\\.rs.*colors::",
+    # Line-wrapping loop — <= / * turn this into an infinite loop
+    "src/util\\.rs.*base64_wrap",
+    # Host-filesystem-dependent CA bundle discovery
+    "src/verify/trust_store\\.rs.*TrustStore::system",
+    "src/verify/trust_store\\.rs.*find_system_ca_bundle",
+    "src/verify/trust_store\\.rs.*is_pem_cert_file",
+]
